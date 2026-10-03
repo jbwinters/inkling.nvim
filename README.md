@@ -1,80 +1,84 @@
 # inkling.nvim
 
 Copilot-style inline completions for Neovim (0.10+) with your choice of model:
-OpenAI, Anthropic, or a local Ollama model. While you type in insert mode, a
-grey "ghost" suggestion for the rest of the line or block appears at the cursor.
+Anthropic, OpenAI, or a local Ollama model. While you type in insert mode, a
+grey suggestion for the rest of the line or block appears at the cursor.
 
-Defaults: OpenAI → `gpt-6-luna` (with `reasoning_effort = "none"` for about 1s latency),
-Anthropic → `claude-sonnet-5-5`, Ollama → `qwen2.5-coder:7b` (FIM).
+The model sees the whole current file plus the relevant parts of your project:
+files it imports, files next to it, and files that use it.
 
 ## Install (vim-plug)
 
 ```vim
 Plug '~/mydev/development_environment/inkling.nvim'
 " after plug#end():
-lua require('inkling').setup({ provider = 'openai' })
+lua require('inkling').setup()
 ```
 
-API keys come from `$OPENAI_API_KEY` / `$ANTHROPIC_API_KEY` by default. Neovim
-must be started with these set. You can also set `api_key` on a provider to a
-string or a function, for example
-`api_key = function() return vim.trim(vim.fn.system('pass show openai')) end`.
+API keys come from `$ANTHROPIC_API_KEY` / `$OPENAI_API_KEY`, so start Neovim
+with them set. You can also give a provider an `api_key` string or function,
+e.g. `api_key = function() return vim.trim(vim.fn.system('pass show openai')) end`.
+
+## Using it
+
+| Insert-mode key | Does |
+|---|---|
+| `Tab` | accept the suggestion (a normal Tab when there is none) |
+| `Alt-w` | accept the next word |
+| `Alt-l` | accept the next line |
+| `Ctrl-]` | dismiss |
+| `Alt-\` | ask for a suggestion now |
+
+Typing characters that match the suggestion keeps it on screen without a new
+request. Suggestions hide while Vim's completion menu is open.
+
+| Command | Does |
+|---|---|
+| `:Inkling` | status: on/off, provider, model, recent response times |
+| `:Inkling on` / `off` / `toggle` | turn suggestions on or off |
+| `:Inkling use anthropic` | switch provider |
+| `:Inkling use gpt-5.4-mini` | switch model for the current provider |
+| `:Inkling use openai/gpt-5.4-mini` | both |
+| `:Inkling context` | show exactly what the model would see at the cursor |
+
+Set `vim.b.inkling_disabled = true` to turn it off for one buffer.
+
+## Models
+
+| Provider | Default model | Notes |
+|---|---|---|
+| `anthropic` (default) | `claude-sonnet-5-5` | Most accurate in testing (35/40 exact on a real-code benchmark), ~1.5s |
+| `openai` | `gpt-6-luna` | Reasoning off; 23/40 exact, ~1.3–1.8s |
+| `ollama` | `qwen2.5-coder:7b` | Local fill-in-the-middle; small prompt, no project context |
+
+Any OpenAI-compatible endpoint (OpenRouter, LM Studio, vLLM, ...) works as an
+extra provider with `kind = 'openai'` (see Configuration).
 
 ## What the model sees
 
-Each request sends:
-
 1. **The whole current file**, with the cursor marked. Files over 60k characters
-   are cut to a window around the cursor (3/4 of it before the cursor).
-2. **Project context** (up to 40k characters, rebuilt in the background on
-   BufEnter / save / InsertLeave and cached, so it never slows a request down):
-   - **Upstream**: project-local files the current file imports. Small files are
-     sent whole; larger ones as an outline (signatures, classes, exports,
-     schema fields, …) plus the full definitions of the names this file
-     actually imports or calls.
-   - **Peers**: files in the same directory and language, as outlines (or whole
-     if small).
-   - **Downstream**: files that import the current file, as snippets around
-     their import lines and their uses of this file's public names (found
-     with `rg`).
+   are cut to a window around the cursor.
+2. **Project context** (up to 40k characters), rebuilt in the background when you
+   switch buffers, save, or leave insert mode, so it never delays a suggestion:
+   - **Upstream**: project files this file imports. Small ones whole; larger ones
+     as an outline plus the full definitions of the names this file uses.
+   - **Peers**: same-directory files of the same language, as outlines, ranked by
+     whether this file uses names they define, name similarity, and recent edits.
+     Other files' tests are ranked last.
+   - **Downstream**: files that import this one, as snippets around their uses of
+     it (found with `rg`).
 
-Imports are resolved for Python, JS/TS, Lua, Elixir, Go, Rust and C/C++.
-Third-party packages are skipped. Outlines are built from per-language
-declaration patterns plus indentation, so no treesitter parsers are needed.
+Imports are resolved for Python, JS/TS, Lua, Elixir, Go, Rust and C/C++; outside
+packages are skipped. Outlines come from per-language declaration patterns plus
+indentation, so treesitter parsers aren't needed.
 
-The project context goes first in the prompt so it can be cached between
-requests: Anthropic via `cache_control`, OpenAI automatically.
-
-`:Inkling context` opens a split showing exactly what would be sent from
-the cursor, with a per-file size breakdown.
-
-## Keys (insert mode)
-
-| key      | action                                               |
-|----------|------------------------------------------------------|
-| `<Tab>`  | accept the whole suggestion (otherwise a normal Tab) |
-| `<M-w>`  | accept the next word                                 |
-| `<M-l>`  | accept the next line                                 |
-| `<C-]>`  | dismiss                                              |
-| `<M-\>`  | request a suggestion now                             |
-
-Typing characters that match the suggestion keeps it on screen and consumes
-those characters, without making a new request.
-
-## Commands
-
-```
-:Inkling status              " provider, model, key found?, last error
-:Inkling toggle | enable | disable
-:Inkling provider anthropic  " switch provider at runtime
-:Inkling model gpt-5.4-mini  " switch model for the current provider
-:Inkling context              " show the full prompt for the cursor position
-:Inkling refresh              " rebuild the project context now
-```
-
-Set `vim.b.inkling_disabled = true` to turn it off for a single buffer.
+Unchanging parts of the prompt (project context, and the file above the cursor
+line) are cached by the provider between requests, which makes repeat requests
+faster and cheaper.
 
 ## Configuration
+
+Everything is optional; these are the defaults.
 
 ```lua
 require('inkling').setup({
@@ -90,32 +94,36 @@ require('inkling').setup({
       downstream = true, max_downstream = 6,
     },
   },
-  disabled_filetypes = { 'help', 'gitcommit' },
+  disabled_filetypes = { 'help', 'gitcommit', 'gitrebase', 'TelescopePrompt', 'NvimTree', 'nerdtree', 'qf', 'netrw' },
   keymaps = { accept = '<Tab>', accept_word = '<M-w>', accept_line = '<M-l>', dismiss = '<C-]>', trigger = '<M-\\>' },
   providers = {
-    openai    = { model = 'gpt-6-luna' },
     anthropic = { model = 'claude-sonnet-5-5' },
-    -- Ollama defaults to an 8k-character window and no project context (small local context windows).
-    ollama    = { model = 'qwen2.5-coder:7b', url = 'http://localhost:11434/api/generate', fim = true,
-                  context = { current_file_max_chars = 8000, project = { enabled = false } } },
-    -- Any OpenAI-compatible endpoint (OpenRouter, LM Studio, vLLM, ...):
+    openai    = { model = 'gpt-6-luna' },
+    ollama    = { model = 'qwen2.5-coder:7b', url = 'http://localhost:11434/api/generate' },
+    -- extra OpenAI-compatible provider:
     openrouter = {
       kind = 'openai',
       url = 'https://openrouter.ai/api/v1/chat/completions',
       model = 'qwen/qwen3-coder',
       api_key_env = 'OPENROUTER_API_KEY',
+      output = 'json',   -- 'json' (structured output) or 'tags' if the endpoint lacks JSON schema support
       extra_body = {},
     },
   },
 })
 ```
 
-Change the ghost text color with `:hi InklingSuggestion guifg=#665c54`.
+Change the suggestion colour with `:hi InklingSuggestion guifg=#665c54`.
 
 ## Tests
 
 ```
-nvim --headless -u NONE -l tests/run.lua openai           # request/render/accept, real API
+nvim --headless -u NONE -l tests/run.lua anthropic        # request, display, accept (real API)
 nvim --headless -u NONE -l tests/context.lua              # outlines + import resolution fixtures
 nvim --headless -u NONE -l tests/live_context.lua openai  # latency with full project context
+INKLING_EVAL_DIR=~/code nvim --headless -u NONE -l tests/eval.lua anthropic 40   # accuracy benchmark
 ```
+
+`tests/eval.lua` cuts real lines from the code under `INKLING_EVAL_DIR` (at the
+start, mid-line, or with a gap in the middle), asks for completions with full
+project context, and scores the first suggested line against the original.

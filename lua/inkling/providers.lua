@@ -7,16 +7,36 @@ local M = {}
 
 local CURSOR = "<|CURSOR|>"
 
-local SYSTEM_PROMPT = table.concat({
-  "You are a code completion engine embedded in a text editor.",
-  "The user sends a file with the cursor position marked by " .. CURSOR .. ".",
-  "Reply with ONLY the exact text to insert at the cursor: no explanations, no markdown fences,",
-  "and never repeat text that already appears before or after the cursor.",
-  "Complete the current line, or the current logical block (e.g. the rest of a function body) when that is clearly intended.",
-  "Preserve the file's indentation style. If nothing sensible should be inserted, reply with an empty message.",
-  "Related project files (imports, same-directory files, files that use this one) may be provided first as reference:",
-  "use them to get names, signatures and conventions right, but only ever write text for the current file.",
-}, " ")
+-- How chat models return the completion (provider `output` option):
+--   "json": structured output with a single `text` field. The model can't
+--           answer in prose, and whitespace survives exactly.
+--   "tags": text wrapped in <completion></completion>; anything outside the
+--           tags is dropped. Faster than JSON where the model reliably uses tags.
+-- In testing, gpt-6-luna often forgets tags (json is much better) while
+-- claude-sonnet-5-5 is as accurate with tags and ~0.4s faster.
+M.opts = { cursor_hint = true }
+
+local OUTPUT_RULES = {
+  json = "Answer with JSON whose `text` field is the exact text to insert at the cursor (an empty string if nothing fits).",
+  tags = "Reply with only the text to insert at the cursor, wrapped in <completion></completion> tags"
+    .. " (<completion></completion> if nothing fits).",
+}
+
+function M.system_prompt(output)
+  return table.concat({
+    "You are a code completion engine embedded in a text editor.",
+    "The user sends a file with the cursor position marked by " .. CURSOR .. ".",
+    OUTPUT_RULES[output or "tags"],
+    "Never explain, never use markdown fences, and never repeat text that already appears before or after the cursor.",
+    "The text is inserted verbatim, so whitespace matters: start with a space when one is needed after the text",
+    "before the cursor (e.g. after `return` or `from`), and with a newline to start a new line.",
+    "Complete the current line, or the current logical block (e.g. the rest of a function body) when that is clearly intended.",
+    "Preserve the file's indentation style. If the code around the cursor looks broken or mid-edit, still give your",
+    "best short continuation; do not comment on it.",
+    "Related project files (imports, same-directory files, files that use this one) may be provided first as reference:",
+    "use them to get names, signatures and conventions right, but only ever write text for the current file.",
+  }, " ")
+end
 
 -- The project context changes rarely, so it goes first: providers can cache
 -- that prefix across requests. The current file changes on every keystroke.
@@ -27,19 +47,49 @@ local function project_prompt(ctx)
   return "<project_context>\n" .. ctx.project .. "\n</project_context>"
 end
 
-local function file_prompt(ctx)
-  local note = ctx.truncated and " (excerpt around the cursor; file is longer)" or ""
-  return ('<current_file path="%s" language="%s"%s>\n%s%s%s\n</current_file>'):format(
-    ctx.filename, ctx.filetype, note ~= "" and (' note="' .. note .. '"') or "", ctx.prefix, CURSOR, ctx.suffix)
+-- The current file split in two: `head` is everything above the cursor line,
+-- which doesn't change while you type on one line (so it can be cached);
+-- `tail` is the cursor line onwards.
+local function file_prompt_parts(ctx)
+  local note = ctx.truncated and ' note="excerpt around the cursor; the file is longer"' or ""
+  local above = ctx.prefix:sub(1, #ctx.prefix - #ctx.before)
+  local head = ('<current_file path="%s" language="%s"%s>\n%s'):format(ctx.filename, ctx.filetype, note, above)
+  local tail = ("%s%s%s\n</current_file>"):format(ctx.before, CURSOR, ctx.suffix)
+  if M.opts.cursor_hint then
+    -- Restating the cursor line helps chat models continue mid-identifier
+    -- instead of starting a fresh token.
+    tail = tail .. ("\n\nThe cursor line reads `%s%s%s`. Give exactly the text that goes at %s."):format(
+      ctx.before, CURSOR, ctx.after, CURSOR)
+  end
+  return head, tail
 end
 
-local function user_prompt(ctx)
+local function file_prompt(ctx)
+  local head, tail = file_prompt_parts(ctx)
+  return head .. tail
+end
+
+function M.user_prompt(ctx)
   local proj = project_prompt(ctx)
   return (proj and (proj .. "\n\n") or "") .. file_prompt(ctx)
 end
 
-M.SYSTEM_PROMPT = SYSTEM_PROMPT
-M.user_prompt = user_prompt
+-- Text between the completion tags. A missing closing tag is fine (stop
+-- sequences cut it off). No tags at all means the model ignored the format,
+-- usually to think out loud, so the reply is discarded.
+function M.untag(s)
+  if not s then
+    return nil
+  end
+  return s:match("<completion>(.-)</completion>") or s:match("<completion>(.*)$") or s:match("^(.-)</completion>") or ""
+end
+
+local TEXT_SCHEMA = {
+  type = "object",
+  properties = { text = { type = "string", description = "Exact text to insert at the cursor." } },
+  required = { "text" },
+  additionalProperties = false,
+}
 
 local builders = {}
 
@@ -49,17 +99,27 @@ function builders.openai(p, ctx)
   if key and key ~= "" then
     headers["Authorization"] = "Bearer " .. key
   end
-  local body = vim.tbl_extend("force", {
+  local body = {
     model = p.model,
     max_completion_tokens = config.options.max_tokens,
     messages = {
-      { role = "system", content = SYSTEM_PROMPT },
-      { role = "user", content = user_prompt(ctx) },
+      { role = "system", content = M.system_prompt(p.output) },
+      { role = "user", content = M.user_prompt(ctx) },
     },
-  }, p.extra_body or {})
+  }
+  if p.output == "json" then
+    body.response_format = { type = "json_schema", json_schema = { name = "insert", strict = true, schema = TEXT_SCHEMA } }
+  end
+  body = vim.tbl_extend("force", body, p.extra_body or {})
   return headers, body, function(resp)
     local choice = resp.choices and resp.choices[1]
-    return choice and choice.message and choice.message.content
+    local content = choice and choice.message and choice.message.content
+    resp._truncated = choice and choice.finish_reason == "length"
+    if p.output == "json" then
+      local ok, obj = pcall(vim.json.decode, content or "")
+      return ok and type(obj) == "table" and obj.text or ""
+    end
+    return M.untag(content)
   end
 end
 
@@ -73,13 +133,26 @@ function builders.anthropic(p, ctx)
   if proj then
     table.insert(content, { type = "text", text = proj, cache_control = { type = "ephemeral" } })
   end
-  table.insert(content, { type = "text", text = file_prompt(ctx) })
-  local body = vim.tbl_extend("force", {
+  local head, tail = file_prompt_parts(ctx)
+  -- second cache breakpoint: the file above the cursor line (only worth it for big files)
+  if #head > 4000 then
+    table.insert(content, { type = "text", text = head, cache_control = { type = "ephemeral" } })
+    table.insert(content, { type = "text", text = tail })
+  else
+    table.insert(content, { type = "text", text = head .. tail })
+  end
+  local body = {
     model = p.model,
     max_tokens = config.options.max_tokens,
-    system = SYSTEM_PROMPT,
+    system = M.system_prompt(p.output),
     messages = { { role = "user", content = content } },
-  }, p.extra_body or {})
+  }
+  if p.output == "json" then
+    body.output_config = { format = { type = "json_schema", schema = TEXT_SCHEMA } }
+  else
+    body.stop_sequences = { "</completion>" }
+  end
+  body = vim.tbl_deep_extend("force", body, p.extra_body or {})
   return headers, body, function(resp)
     local parts = {}
     for _, block in ipairs(resp.content or {}) do
@@ -87,7 +160,14 @@ function builders.anthropic(p, ctx)
         table.insert(parts, block.text)
       end
     end
-    return table.concat(parts)
+    local out = table.concat(parts)
+    resp._truncated = resp.stop_reason == "max_tokens"
+    M.last_usage = resp.usage
+    if p.output == "json" then
+      local ok, obj = pcall(vim.json.decode, out)
+      return ok and type(obj) == "table" and obj.text or ""
+    end
+    return M.untag(out)
   end
 end
 
@@ -96,13 +176,14 @@ function builders.ollama(p, ctx)
   if p.fim then
     body = { model = p.model, prompt = ctx.prefix, suffix = ctx.suffix }
   else
-    body = { model = p.model, system = SYSTEM_PROMPT, prompt = user_prompt(ctx) }
+    body = { model = p.model, system = M.system_prompt("tags"), prompt = M.user_prompt(ctx) }
   end
   body.stream = false
   body.options = { num_predict = config.options.max_tokens, temperature = config.options.temperature }
   body = vim.tbl_deep_extend("force", body, p.extra_body or {})
   return {}, body, function(resp)
-    return resp.response
+    resp._truncated = resp.done_reason == "length"
+    return p.fim and resp.response or M.untag(resp.response)
   end
 end
 
@@ -123,7 +204,12 @@ function M.complete(ctx, cb)
     if err then
       return cb(err)
     end
-    cb(nil, extract(resp) or "")
+    local text = extract(resp) or ""
+    -- Cut off by max_tokens: keep only complete lines.
+    if resp._truncated and text:find("\n") then
+      text = text:match("^(.*)\n")
+    end
+    cb(nil, text)
   end)
 end
 

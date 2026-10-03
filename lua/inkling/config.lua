@@ -3,7 +3,7 @@ local M = {}
 M.defaults = {
   enabled = true,
   -- Which entry in `providers` to use.
-  provider = "openai",
+  provider = "anthropic",
   -- Milliseconds to wait after the last keystroke before requesting a completion.
   debounce_ms = 250,
   -- What to send with each request. Providers can override any of this with
@@ -44,6 +44,7 @@ M.defaults = {
       url = "https://api.openai.com/v1/chat/completions",
       model = "gpt-6-luna",
       api_key_env = "OPENAI_API_KEY",
+      output = "json", -- "json" or "tags": how the model returns the completion
       -- Merged into the request body. Reasoning off keeps latency around 1s.
       extra_body = { reasoning_effort = "none" },
     },
@@ -52,7 +53,9 @@ M.defaults = {
       url = "https://api.anthropic.com/v1/messages",
       model = "claude-sonnet-5-5",
       api_key_env = "ANTHROPIC_API_KEY",
-      extra_body = {},
+      output = "tags",
+      -- No extended thinking: same accuracy for completions, faster.
+      extra_body = { thinking = { type = "between_tools" } },
     },
     ollama = {
       kind = "ollama",

@@ -62,7 +62,17 @@ function resolvers.python(text, dir, root)
       end
       bases = { base }
     else
-      bases = { root, join(root, "src"), dir }
+      -- absolute import: try every directory from here up to the root, like sys.path would
+      bases = {}
+      local d = dir
+      while d and #d >= #root do
+        table.insert(bases, d)
+        table.insert(bases, join(d, "src"))
+        if d == root then
+          break
+        end
+        d = vim.fs.dirname(d)
+      end
     end
     for _, b in ipairs(bases) do
       local p = rel == "" and first_file({ join(b, "__init__.py") })
@@ -244,22 +254,58 @@ function resolvers.go(text, _, root)
   if not module then
     return result
   end
-  local specs = {}
+  local specs = {} -- { alias, path }
   for block in text:gmatch("import%s*(%b())") do
-    for s in block:gmatch('"([^"]+)"') do
-      table.insert(specs, s)
+    for line in block:gmatch("[^\n]+") do
+      local alias, s = line:match('^%s*([%w_%.]*)%s*"([^"]+)"')
+      if s then
+        table.insert(specs, { alias, s })
+      end
     end
   end
-  for s in text:gmatch('import%s+[%w_%.]*%s*"([^"]+)"') do
-    table.insert(specs, s)
+  for alias, s in text:gmatch('\nimport%s+([%w_%.]*)%s*"([^"]+)"') do
+    table.insert(specs, { alias, s })
   end
-  for _, s in ipairs(specs) do
+  for _, spec in ipairs(specs) do
+    local alias, s = spec[1], spec[2]
     if s:sub(1, #module) == module then
       local d = join(root, s:sub(#module + 2))
+      local pkg = alias ~= "" and alias or s:match("([^/]+)$")
+      -- names this file uses from the package: `sessions.SessionState`
+      local used = {}
+      for n in text:gmatch("%f[%w_]" .. vim.pesc(pkg) .. "%.([%u][%w_]*)") do
+        used[n] = true
+      end
+      -- a Go import is a whole directory: keep the files that declare those names
+      local files = {}
       for name, type in vim.fs.dir(d) do
         if type == "file" and name:match("%.go$") and not name:match("_test%.go$") then
-          add(result, join(d, name), {})
+          table.insert(files, name)
         end
+      end
+      table.sort(files)
+      local matched = false
+      for _, name in ipairs(files) do
+        local fd = io.open(join(d, name))
+        local src = fd and ("\n" .. fd:read("*a")) or ""
+        if fd then
+          fd:close()
+        end
+        local declared = {}
+        for n in pairs(used) do
+          local p = vim.pesc(n) .. "%f[^%w_]"
+          if src:find("\nfunc%s+" .. p) or src:find("\ntype%s+" .. p) or src:find("\nvar%s+" .. p)
+            or src:find("\nconst%s+" .. p) or src:find("\n%s+" .. p .. "%s*=") or src:find("\n%s+" .. p .. "%s+[%w%*%[]") then
+            table.insert(declared, n)
+          end
+        end
+        if #declared > 0 then
+          matched = true
+          add(result, join(d, name), declared)
+        end
+      end
+      if not matched and files[1] then
+        add(result, join(d, files[1]), {})
       end
     end
   end

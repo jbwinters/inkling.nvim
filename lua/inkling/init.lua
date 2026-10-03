@@ -16,6 +16,15 @@ local inflight = nil
 local request_id = 0
 local last_error = nil
 
+-- Recent requests, newest last: { ms, chars, outcome, text }.
+local history = {}
+local function record(entry)
+  table.insert(history, entry)
+  if #history > 50 then
+    table.remove(history, 1)
+  end
+end
+
 local cache = {}
 local cache_order = {}
 local CACHE_SIZE = 64
@@ -216,7 +225,8 @@ local function cancel_inflight()
 end
 
 local function show(ctx, text)
-  if text == "" then
+  -- never compete with the completion menu; Tab belongs to it while it's open
+  if text == "" or vim.fn.pumvisible() == 1 then
     return
   end
   current = { bufnr = ctx.bufnr, row = ctx.row, col = ctx.col, before = ctx.before, text = text }
@@ -243,29 +253,36 @@ function M.request()
   cancel_inflight()
   request_id = request_id + 1
   local id = request_id
+  local started = uv.hrtime()
+  local entry = { chars = #ctx.prefix + #ctx.suffix + #(ctx.project or ""), file = ctx.filename }
   inflight = providers.complete(ctx, function(err, text)
     vim.schedule(function()
+      entry.ms = math.floor((uv.hrtime() - started) / 1e6)
       if id ~= request_id then
-        return
+        entry.outcome = "superseded"
+        return record(entry)
       end
       inflight = nil
       if err then
+        entry.outcome = "error: " .. err
+        record(entry)
         return report_error(err)
       end
       last_error = nil
+      entry.raw = text
       text = clean(text, ctx)
+      entry.text = text
       cache_put(key, text)
       -- Ignore stale responses: the buffer or cursor moved on while we waited.
-      if not vim.api.nvim_buf_is_valid(ctx.bufnr) or vim.api.nvim_get_current_buf() ~= ctx.bufnr then
-        return
-      end
-      if vim.api.nvim_buf_get_changedtick(ctx.bufnr) ~= ctx.tick then
-        return
-      end
       local _, row, col = cursor_state()
-      if row ~= ctx.row or col ~= ctx.col or vim.api.nvim_get_mode().mode:sub(1, 1) ~= "i" then
-        return
+      if not vim.api.nvim_buf_is_valid(ctx.bufnr) or vim.api.nvim_get_current_buf() ~= ctx.bufnr
+        or vim.api.nvim_buf_get_changedtick(ctx.bufnr) ~= ctx.tick
+        or row ~= ctx.row or col ~= ctx.col or vim.api.nvim_get_mode().mode:sub(1, 1) ~= "i" then
+        entry.outcome = "stale"
+        return record(entry)
       end
+      entry.outcome = text == "" and "empty" or "shown"
+      record(entry)
       clear()
       show(ctx, text)
     end)
@@ -337,7 +354,7 @@ local function accept_part(part)
 end
 
 function M.has_suggestion()
-  if current and not advance() then
+  if current and (vim.fn.pumvisible() == 1 or not advance()) then
     clear()
   end
   return current ~= nil
@@ -408,11 +425,13 @@ local function make_fallback(lhs)
   end
 end
 
-local function map(lhs, action, desc)
+-- `passthrough`: with no suggestion showing, the key does what it did before
+-- (Tab indents, <C-]> expands abbreviations). Otherwise it does nothing.
+local function map(lhs, action, desc, passthrough)
   if not lhs or lhs == "" then
     return
   end
-  local fallback = make_fallback(lhs)
+  local fallback = passthrough and make_fallback(lhs) or function() end
   vim.keymap.set("i", lhs, function()
     if M.has_suggestion() then
       action()
@@ -424,10 +443,10 @@ end
 
 local function set_keymaps()
   local k = config.options.keymaps
-  map(k.accept, M.accept, "accept suggestion")
+  map(k.accept, M.accept, "accept suggestion", true)
   map(k.accept_word, M.accept_word, "accept next word")
   map(k.accept_line, M.accept_line, "accept next line")
-  map(k.dismiss, M.dismiss, "dismiss suggestion")
+  map(k.dismiss, M.dismiss, "dismiss suggestion", true)
   if k.trigger and k.trigger ~= "" then
     vim.keymap.set("i", k.trigger, function()
       clear()
@@ -442,43 +461,38 @@ end
 
 local function status()
   local p, name = config.provider()
-  local key_ok = p.kind == "ollama" or (config.api_key(p) or "") ~= ""
-  local lines = {
-    ("inkling: %s"):format(config.options.enabled and "enabled" or "disabled"),
-    ("provider: %s (%s) model: %s"):format(name, p.kind, p.model),
-    ("api key: %s"):format(p.kind == "ollama" and "n/a" or (key_ok and "found" or ("MISSING $" .. (p.api_key_env or "?")))),
+  local parts = {
+    "inkling " .. (config.options.enabled and "on" or "off"),
+    name .. " " .. p.model,
   }
-  if last_error then
-    table.insert(lines, "last error: " .. last_error)
+  if p.kind ~= "ollama" and (config.api_key(p) or "") == "" then
+    table.insert(parts, "NO API KEY ($" .. (p.api_key_env or "?") .. ")")
   end
-  vim.notify(table.concat(lines, "\n"))
+  local recent = vim.list_slice(history, math.max(1, #history - 9))
+  if #recent > 0 then
+    local total = 0
+    for _, h in ipairs(recent) do
+      total = total + h.ms
+    end
+    table.insert(parts, ("avg %.1fs over %d requests"):format(total / #recent / 1000, #recent))
+  end
+  local msg = table.concat(parts, " · ")
+  if last_error then
+    msg = msg .. "\nlast error: " .. last_error
+  end
+  vim.notify(msg)
 end
 
-local subcommands = {
-  enable = function()
-    config.options.enabled = true
-  end,
-  disable = function()
-    config.options.enabled = false
-    M.dismiss()
-  end,
-  toggle = function()
-    config.options.enabled = not config.options.enabled
-    if not config.options.enabled then
-      M.dismiss()
-    end
-    vim.notify("inkling " .. (config.options.enabled and "enabled" or "disabled"))
-  end,
-  status = status,
-  -- Show exactly what would be sent for a completion at the cursor.
-  context = function()
-    local bufnr = vim.api.nvim_get_current_buf()
-    local ctx = build_context()
-    local _, _, summary = project.get(bufnr)
-    local p, name = config.provider()
+-- Show exactly what would be sent for a completion at the cursor.
+local function show_context()
+  local bufnr = vim.api.nvim_get_current_buf()
+  local ctx = build_context()
+  local p, name = config.provider()
+  project.build(bufnr, function(text, summary)
+    ctx.project = config.context_opts().project.enabled and text or ""
     local header = {
-      ("# provider: %s  model: %s"):format(name, p.model),
-      ("# current file: %d chars%s"):format(#ctx.prefix + #ctx.suffix, ctx.truncated and " (window)" or " (whole file)"),
+      ("# %s %s"):format(name, p.model),
+      ("# current file: %d chars%s"):format(#ctx.prefix + #ctx.suffix, ctx.truncated and " (window around cursor)" or " (whole file)"),
       ("# project context: %d chars"):format(#ctx.project),
     }
     for _, l in ipairs(summary) do
@@ -488,7 +502,7 @@ local subcommands = {
     if p.kind == "ollama" and p.fim then
       body = "[FIM prefix]\n" .. ctx.prefix .. "\n[FIM suffix]\n" .. ctx.suffix
     else
-      body = "[system]\n" .. providers.SYSTEM_PROMPT .. "\n\n[user]\n" .. providers.user_prompt(ctx)
+      body = "[system]\n" .. providers.system_prompt(p.output) .. "\n\n[user]\n" .. providers.user_prompt(ctx)
     end
     vim.cmd("botright new")
     local buf = vim.api.nvim_get_current_buf()
@@ -496,36 +510,61 @@ local subcommands = {
     vim.bo[buf].bufhidden = "wipe"
     vim.bo[buf].filetype = "markdown"
     vim.api.nvim_buf_set_name(buf, "inkling://context/" .. buf)
-    local lines = vim.list_extend(header, vim.split("\n" .. body, "\n", { plain = true }))
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.list_extend(header, vim.split("\n" .. body, "\n", { plain = true })))
     vim.bo[buf].modifiable = false
-  end,
-  -- Rebuild the project context for the current buffer now.
-  refresh = function()
-    project.refresh(vim.api.nvim_get_current_buf())
-  end,
-  provider = function(arg)
-    if not arg then
-      return vim.notify("inkling provider: " .. config.options.provider)
+  end)
+end
+
+local function set_enabled(on)
+  config.options.enabled = on
+  if not on then
+    M.dismiss()
+  end
+  vim.notify("inkling " .. (on and "on" or "off"))
+end
+
+-- `:Inkling use anthropic`, `:Inkling use gpt-5.4-mini`, `:Inkling use openai/gpt-5.4-mini`
+local function use(arg)
+  if not arg then
+    return status()
+  end
+  local prov, model = arg:match("^([^/]+)/(.+)$")
+  if not prov then
+    if config.options.providers[arg] then
+      prov = arg
+    else
+      model = arg
     end
-    if not config.options.providers[arg] then
-      return vim.notify("inkling: unknown provider " .. arg, vim.log.levels.ERROR)
+  end
+  if prov then
+    if not config.options.providers[prov] then
+      return vim.notify("inkling: unknown provider " .. prov, vim.log.levels.ERROR)
     end
-    config.options.provider = arg
-    cache, cache_order, last_error = {}, {}, nil
-    -- providers can override context options (e.g. ollama turns project context off)
-    project.refresh(vim.api.nvim_get_current_buf())
-    status()
+    config.options.provider = prov
+  end
+  if model then
+    config.provider().model = model
+  end
+  cache, cache_order, last_error = {}, {}, nil
+  -- providers can override context options (e.g. ollama turns project context off)
+  project.refresh(vim.api.nvim_get_current_buf())
+  local p, name = config.provider()
+  vim.notify(("inkling: %s %s"):format(name, p.model))
+end
+
+local subcommands = {
+  status = status,
+  on = function()
+    set_enabled(true)
   end,
-  model = function(arg)
-    local p = config.provider()
-    if not arg then
-      return vim.notify("inkling model: " .. p.model)
-    end
-    p.model = arg
-    cache, cache_order, last_error = {}, {}, nil
-    status()
+  off = function()
+    set_enabled(false)
   end,
+  toggle = function()
+    set_enabled(not config.options.enabled)
+  end,
+  use = use,
+  context = show_context,
 }
 
 local function create_command()
@@ -533,17 +572,24 @@ local function create_command()
     local sub = cmd.fargs[1] or "status"
     local fn = subcommands[sub]
     if not fn then
-      return vim.notify("inkling: unknown subcommand " .. sub, vim.log.levels.ERROR)
+      return vim.notify("inkling: unknown command " .. sub .. " (try: on, off, toggle, use, context)", vim.log.levels.ERROR)
     end
     fn(cmd.fargs[2])
   end, {
     nargs = "*",
+    desc = "inkling: status | on | off | toggle | use <provider or model> | context",
     complete = function(_, line)
       local args = vim.split(line, "%s+")
       if #args <= 2 then
-        return vim.tbl_keys(subcommands)
-      elseif args[2] == "provider" then
-        return vim.tbl_keys(config.options.providers)
+        return { "on", "off", "toggle", "use", "context", "status" }
+      elseif args[2] == "use" then
+        local out = {}
+        for name, p in pairs(config.options.providers) do
+          table.insert(out, name)
+          table.insert(out, name .. "/" .. p.model)
+        end
+        table.sort(out)
+        return out
       end
       return {}
     end,
@@ -577,6 +623,8 @@ function M.setup(opts)
     end,
   })
   vim.api.nvim_create_autocmd("InsertEnter", { group = group, callback = schedule_request })
+  vim.api.nvim_create_autocmd("CompleteChanged", { group = group, callback = clear })
+  vim.api.nvim_create_autocmd("CompleteDone", { group = group, callback = schedule_request })
   -- Project context is rebuilt in the background, never during a request.
   local refresh_timers = {}
   local function refresh_later(args)
@@ -629,6 +677,10 @@ end
 
 -- Exposed for tests.
 M._clean = clean
+M._build_context = build_context
+M._history = function()
+  return history
+end
 M._clear_cache = function()
   cache, cache_order = {}, {}
 end

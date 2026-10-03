@@ -176,22 +176,83 @@ local function downstream_section(root, path, f, import_lnums, names)
   }
 end
 
-local function list_peers(path, dir, exclude, max)
+local function is_test(p)
+  local name = vim.fs.basename(p)
+  return name:match("_test%.") or name:match("^test_") or name:match("%.test%.") or name:match("%.spec%.")
+    or name:match("_spec%.") or name:match("Test%.") ~= nil
+end
+
+local function name_tokens(p)
+  local stem = vim.fn.fnamemodify(p, ":t:r"):gsub("(%l)(%u)", "%1_%2"):lower()
+  local set = {}
+  for t in stem:gmatch("[%l%d]+") do
+    if #t > 1 then
+      set[t] = true
+    end
+  end
+  return set
+end
+
+-- Same-directory files, most relevant first: files declaring names this file
+-- uses, similar names (half_normal.py next to normal.py), files this one
+-- mentions, and recently edited files.
+local function list_peers(path, dir, exclude, max, text, open)
   local fam = FAMILY[vim.fn.fnamemodify(path, ":e")]
   if not fam then
     return {}
   end
-  local out = {}
+  local mine = name_tokens(path)
+  local now = os.time()
+  local words = {}
+  for w in text:gmatch("[%a_][%w_]*") do
+    words[w] = true
+  end
+  local scored = {}
   for name, type in vim.fs.dir(dir) do
     if type == "file" and FAMILY[name:match("%.([%w]+)$") or ""] == fam then
       local p = vim.fs.normalize(dir .. "/" .. name)
       if p ~= path and not exclude[p] then
-        table.insert(out, p)
+        local score = 0
+        for t in pairs(name_tokens(p)) do
+          if mine[t] then
+            score = score + 3
+          end
+        end
+        local f = read(p, open)
+        if f then
+          local uses = 0
+          for _, d in ipairs(get_outline(f).decls) do
+            if d.top and words[d.name] and #d.name > 2 then
+              uses = uses + 1
+            end
+          end
+          score = score + 2 * math.min(uses, 4)
+        end
+        local stem = vim.fn.fnamemodify(name, ":r")
+        if #stem > 2 and text:find("%f[%w_]" .. vim.pesc(stem) .. "%f[^%w_]") then
+          score = score + 2
+        end
+        -- other files' tests are rarely useful context for non-test code
+        if is_test(p) and not is_test(path) then
+          score = score - 3
+        end
+        local st = uv.fs_stat(p)
+        if st and now - st.mtime.sec < 2 * 86400 then
+          score = score + 1
+        end
+        table.insert(scored, { p = p, score = score })
       end
     end
   end
-  table.sort(out)
-  return vim.list_slice(out, 1, max)
+  table.sort(scored, function(a, b)
+    if a.score ~= b.score then
+      return a.score > b.score
+    end
+    return a.p < b.p
+  end)
+  return vim.tbl_map(function(x)
+    return x.p
+  end, vim.list_slice(scored, 1, max))
 end
 
 local function closeness(a, b)
@@ -234,8 +295,21 @@ local function find_downstream(path, text, ft, root, cb)
   end)
 end
 
+-- The nearest enclosing directory with any project marker (a nested package
+-- inside a monorepo is its own project).
 local function project_root(path)
-  local root = vim.fs.root(path, ROOT_MARKERS)
+  local root
+  for dir in vim.fs.parents(path) do
+    for _, m in ipairs(ROOT_MARKERS) do
+      if uv.fs_stat(dir .. "/" .. m) then
+        root = dir
+        break
+      end
+    end
+    if root then
+      break
+    end
+  end
   -- Neovim-plugin layout without a marker: the directory containing lua/
   local plugin = path:match("^(.*)/lua/")
   if plugin and (not root or #plugin > #root) then
@@ -279,7 +353,7 @@ function M.build(bufnr, cb)
     end
   end
   if opts.peers then
-    for _, p in ipairs(list_peers(path, dir, used, opts.max_peers)) do
+    for _, p in ipairs(list_peers(path, dir, used, opts.max_peers, text, open)) do
       local f = read(p, open)
       local s = f and peer_section(root, p, f, opts)
       if s then
