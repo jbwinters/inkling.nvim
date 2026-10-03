@@ -181,6 +181,18 @@ check("generic upstream ignores files outside project", text:find("/etc/hosts", 
 check("generic peer by extension", text:find("rollback.sh") ~= nil)
 check("generic downstream by file name", text:find("ci.yml %(imports") ~= nil)
 
+-- Instructions files ---------------------------------------------------------------
+write("repo/.git/HEAD", "ref")
+write("repo/AGENTS.md", "Use tabs. Never use print for logging.")
+write("repo/svc/pyproject.toml", "[project]")
+write("repo/svc/CLAUDE.md", "Prefer pathlib over os.path.")
+write("repo/svc/app/main.py", "import os\n")
+text, summary = context_for("repo/svc/app/main.py")
+print(summary)
+check("instructions: nearest package file", text:find("Prefer pathlib", 1, true) ~= nil)
+check("instructions: repo-root file too", text:find("Never use print", 1, true) ~= nil)
+check("instructions: nearest first", (text:find("Prefer pathlib", 1, true) or 0) < (text:find("Never use print", 1, true) or 0))
+
 if os.getenv("SHOW") then text = context_for("app/service.py"); print("\n" .. text) end
 vim.fn.delete(tmp, "rf")
 os.exit(failures == 0 and 0 or 1)

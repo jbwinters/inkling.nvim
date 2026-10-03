@@ -91,7 +91,11 @@ Sonnet 5.5 about $0.01–0.02 (less when cached), luna about $0.001.
    - **Downstream**: files that import this one, as snippets around their uses of
      it (found with `rg`).
 
-3. **Your recent edits**: diffs of what you changed in the last few minutes, in
+3. **Project instructions**: `.inkling.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`
+   or `.github/copilot-instructions.md` from the file's directory up to the
+   repository root, nearest first (up to 6k characters). Put conventions there,
+   e.g. "use pytest fixtures, never unittest".
+4. **Your recent edits**: diffs of what you changed in the last few minutes, in
    any file (up to 5 files, 4k characters). If you just renamed a method in one
    file, completions in another file use the new name. Updated when you leave
    insert mode or change text in normal mode.
@@ -118,6 +122,7 @@ require('inkling').setup({
     recent_edits = { enabled = true, max_chars = 4000 },
     project = {
       enabled = true, max_chars = 40000, small_file_chars = 3000,
+      instructions = true, max_instructions_chars = 6000,
       upstream = true, max_upstream = 10,
       peers = true, max_peers = 15,
       downstream = true, max_downstream = 6,

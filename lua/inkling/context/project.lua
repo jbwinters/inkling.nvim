@@ -316,6 +316,40 @@ end
 
 -- The nearest enclosing directory with any project marker (a nested package
 -- inside a monorepo is its own project).
+local INSTRUCTION_FILES = { ".inkling.md", "AGENTS.md", "CLAUDE.md", ".cursorrules", ".github/copilot-instructions.md" }
+
+-- Instruction files from the file's directory up to the repository root
+-- (the nearest .git; without one, up to just below $HOME), nearest first.
+local function instructions(path, budget)
+  local home = vim.fs.normalize(vim.env.HOME or "")
+  local found, total = {}, 0
+  for dir in vim.fs.parents(path) do
+    if dir == home or dir == "/" then
+      break
+    end
+    for _, name in ipairs(INSTRUCTION_FILES) do
+      local p = dir .. "/" .. name
+      local st = uv.fs_stat(p)
+      if st and st.type == "file" and st.size < 200 * 1024 then
+        local fd = io.open(p)
+        local text = fd and vim.trim(fd:read("*a")) or ""
+        if fd then
+          fd:close()
+        end
+        if text ~= "" and total < budget then
+          text = text:sub(1, budget - total)
+          total = total + #text
+          table.insert(found, { path = p, text = text })
+        end
+      end
+    end
+    if uv.fs_stat(dir .. "/.git") then
+      break
+    end
+  end
+  return found
+end
+
 local function project_root(path)
   local root
   for dir in vim.fs.parents(path) do
@@ -390,6 +424,13 @@ function M.build(bufnr, cb)
   local function finish(downstream)
     local budget = opts.max_chars
     local parts, summary, total = {}, {}, 0
+    if opts.instructions then
+      for _, ins in ipairs(instructions(path, opts.max_instructions_chars)) do
+        local label = rel(root, ins.path)
+        table.insert(parts, ("### Project instructions (%s)\n%s"):format(label, ins.text))
+        table.insert(summary, ("%6d chars  %s [instructions]"):format(#ins.text, label))
+      end
+    end
     for _, group in ipairs({ upstream, peers, downstream }) do
       for _, s in ipairs(group) do
         local chosen, label = s.full, s.label

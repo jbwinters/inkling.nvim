@@ -17,6 +17,10 @@ M.defaults = {
     recent_edits = { enabled = true, max_chars = 4000 },
     project = {
       enabled = true,
+      -- AGENTS.md / CLAUDE.md / .inkling.md / .cursorrules / .github/copilot-instructions.md,
+      -- nearest first, from the file's directory up to the repository root
+      instructions = true,
+      max_instructions_chars = 6000,
       max_chars = 40000,        -- total budget for related files
       small_file_chars = 3000,  -- related files smaller than this are sent whole
       upstream = true,          -- files the current file imports: outline + definitions it uses
