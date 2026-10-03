@@ -29,6 +29,8 @@ e.g. `api_key = function() return vim.trim(vim.fn.system('pass show openai')) en
 | `Ctrl-]` | dismiss |
 | `Alt-\` | ask for a suggestion now |
 
+Suggestions stream in: the first line appears as soon as the model starts
+writing, and you can type over it or accept parts of it while the rest arrives.
 Typing characters that match the suggestion keeps it on screen without a new
 request. Suggestions hide while Vim's completion menu is open.
 
@@ -155,6 +157,7 @@ Change the suggestion colour with `:hi InklingSuggestion guifg=#665c54`.
 nvim --headless -u NONE -l tests/run.lua anthropic        # request, display, accept (real API)
 nvim --headless -u NONE -l tests/context.lua              # outlines + import resolution fixtures
 nvim --headless -u NONE -l tests/edits.lua                # recent-edit tracking
+nvim --headless -u NONE -l tests/stream.lua               # streaming display (fake provider)
 nvim --headless -u NONE -l tests/live_context.lua openai  # latency with full project context
 INKLING_EVAL_DIR=~/code nvim --headless -u NONE -l tests/eval.lua anthropic 40   # accuracy benchmark
 ```

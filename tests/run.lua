@@ -41,9 +41,13 @@ local orig = vim.api.nvim_get_mode
 vim.api.nvim_get_mode = function() return { mode = "i" } end -- headless -l doesn't stay in insert mode
 local t0 = vim.uv.hrtime()
 gw.request()
-local ok = vim.wait(20000, function() return gw._current() ~= nil end, 50)
+local ok = vim.wait(20000, function() return gw._current() ~= nil end, 10)
+local first_ms = (vim.uv.hrtime() - t0) / 1e6
+check("first text shown", ok, ("%.0fms"):format(first_ms))
+-- streaming: wait for the rest
+ok = ok and vim.wait(20000, function() return gw._current() and not gw._current().streaming end, 10)
 local ms = (vim.uv.hrtime() - t0) / 1e6
-check("got suggestion", ok, ("%.0fms"):format(ms))
+check("got suggestion", ok, ("%.0fms (first text at %.0fms)"):format(ms, first_ms))
 if ok then
   print("---- suggestion ----\n" .. gw._current().text .. "\n--------------------")
   local marks = vim.api.nvim_buf_get_extmarks(0, vim.api.nvim_create_namespace("inkling"), 0, -1, { details = true })

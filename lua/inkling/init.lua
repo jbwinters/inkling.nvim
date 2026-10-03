@@ -9,9 +9,13 @@ local M = {}
 local ns = vim.api.nvim_create_namespace("inkling")
 local uv = vim.uv or vim.loop
 
--- The suggestion currently displayed (or nil). `before` is the text on the
--- cursor line before the cursor when the suggestion was anchored; it lets us
--- keep the suggestion alive while the user types characters that match it.
+-- The suggestion currently displayed (or nil):
+--   id        request it came from (keeps receiving streamed text)
+--   full      the whole suggestion so far, relative to where it was requested
+--   offset    how much of `full` has been typed over or accepted
+--   text      what's left to show: full:sub(offset + 1)
+--   row, col, before   cursor position / line text before it, as of `offset`
+--   streaming still receiving text
 local current = nil
 local timer = nil
 local inflight = nil
@@ -105,6 +109,10 @@ local function render()
   current.extmark = vim.api.nvim_buf_set_extmark(current.bufnr, ns, current.row, current.col, opts)
 end
 
+local function refresh_text()
+  current.text = current.full:sub(current.offset + 1)
+end
+
 ---------------------------------------------------------------------------
 -- Context + cleanup
 ---------------------------------------------------------------------------
@@ -185,7 +193,7 @@ local function starts_with(s, prefix)
 end
 
 -- Models are imperfect at returning only the inserted text; trim the usual mistakes.
-local function clean(text, ctx)
+local function clean(text, ctx, partial)
   text = text:gsub("\r\n", "\n")
   local fenced = text:match("^%s*```[%w_+-]*\n(.-)\n?```%s*$")
   if fenced then
@@ -218,7 +226,7 @@ local function clean(text, ctx)
     local _, closes = s:gsub("[%)%]}]", "")
     return opens - closes
   end
-  local strip = after ~= "" and text:sub(-#after) == after
+  local strip = not partial and after ~= "" and text:sub(-#after) == after
   if strip and after:find("[%(%)%[%]{}]") then
     strip = balance(text) < 0
   end
@@ -244,26 +252,52 @@ local function eligible(bufnr)
 end
 
 local saved_opts = nil -- setup() options, to restore on `:Inkling use default`
-local inflight_info = nil -- { provider, model, chars } of the request in flight
-
 local function cancel_inflight()
   if inflight then
+    -- providers log the usage of cancelled requests themselves
     pcall(inflight.kill, inflight, 15)
     inflight = nil
-    -- the provider may bill a request we abandon; log an estimate
-    if inflight_info then
-      usage.record_cancelled(inflight_info.provider, inflight_info.model, inflight_info.chars)
-    end
-    inflight_info = nil
   end
 end
 
-local function show(ctx, text)
-  -- never compete with the completion menu; Tab belongs to it while it's open
-  if text == "" or vim.fn.pumvisible() == 1 then
+-- New text for request `id` (streamed so far, or final). Creates the
+-- suggestion if the cursor is still where it was requested (or the user has
+-- typed text that matches it), otherwise updates the one on screen.
+local function update(ctx, id, full, done)
+  if current and current.id == id then
+    -- what has been typed over / accepted must still match
+    if full:sub(1, current.offset) ~= current.full:sub(1, current.offset) then
+      clear()
+      return
+    end
+    current.full, current.streaming = full, not done
+    refresh_text()
+    if current.text == "" and done then
+      clear()
+    else
+      render()
+    end
     return
   end
-  current = { bufnr = ctx.bufnr, row = ctx.row, col = ctx.col, before = ctx.before, text = text }
+  if current or full == "" or vim.fn.pumvisible() == 1 then
+    return
+  end
+  if vim.api.nvim_get_mode().mode:sub(1, 1) ~= "i" or vim.api.nvim_get_current_buf() ~= ctx.bufnr then
+    return
+  end
+  local _, row, col, before = cursor_state()
+  if row ~= ctx.row or not starts_with(before, ctx.before) then
+    return
+  end
+  local typed = before:sub(#ctx.before + 1)
+  if not starts_with(full, typed) or (#full == #typed and done) then
+    return
+  end
+  current = {
+    id = id, bufnr = ctx.bufnr, row = row, col = col, before = before,
+    full = full, offset = #typed, streaming = not done,
+  }
+  refresh_text()
   render()
 end
 
@@ -278,30 +312,40 @@ function M.request()
   end
   local ctx = build_context()
   local key = ctx.project_version .. ":" .. ctx.edits_version .. "\0" .. ctx.prefix .. "\0" .. ctx.suffix
-  if cache[key] then
-    clear()
-    show(ctx, cache[key])
-    return
-  end
-
   cancel_inflight()
   request_id = request_id + 1
   local id = request_id
+  if cache[key] then
+    clear()
+    update(ctx, id, cache[key], true)
+    return
+  end
+
   local started = uv.hrtime()
   local entry = { chars = #ctx.prefix + #ctx.suffix + #(ctx.project or ""), file = ctx.filename }
-  local prov, prov_name = config.provider()
-  inflight_info = { provider = prov_name, model = prov.model, chars = entry.chars }
-  inflight = providers.complete(ctx, function(err, text)
+  local p = config.provider()
+  inflight = providers.run(providers.completion_job(ctx, p), function(partial)
+    vim.schedule(function()
+      if id ~= request_id then
+        return
+      end
+      entry.first_ms = entry.first_ms or math.floor((uv.hrtime() - started) / 1e6)
+      update(ctx, id, clean(partial, ctx, true), false)
+    end)
+  end, function(err, text)
     vim.schedule(function()
       entry.ms = math.floor((uv.hrtime() - started) / 1e6)
       if id ~= request_id then
         entry.outcome = "superseded"
         return record(entry)
       end
-      inflight, inflight_info = nil, nil
+      inflight = nil
       if err then
         entry.outcome = "error: " .. err
         record(entry)
+        if current and current.id == id then
+          clear()
+        end
         return report_error(err)
       end
       last_error = nil
@@ -309,18 +353,9 @@ function M.request()
       text = clean(text, ctx)
       entry.text = text
       cache_put(key, text)
-      -- Ignore stale responses: the buffer or cursor moved on while we waited.
-      local _, row, col = cursor_state()
-      if not vim.api.nvim_buf_is_valid(ctx.bufnr) or vim.api.nvim_get_current_buf() ~= ctx.bufnr
-        or vim.api.nvim_buf_get_changedtick(ctx.bufnr) ~= ctx.tick
-        or row ~= ctx.row or col ~= ctx.col or vim.api.nvim_get_mode().mode:sub(1, 1) ~= "i" then
-        entry.outcome = "stale"
-        return record(entry)
-      end
-      entry.outcome = text == "" and "empty" or "shown"
+      update(ctx, id, text, true)
+      entry.outcome = text == "" and "empty" or ((current and current.id == id) and "shown" or "stale")
       record(entry)
-      clear()
-      show(ctx, text)
     end)
   end)
 end
@@ -353,11 +388,12 @@ local function advance()
   if typed == "" or not starts_with(current.text, typed) then
     return false
   end
-  local rest = current.text:sub(#typed + 1)
-  if rest == "" then
+  current.offset = current.offset + #typed
+  current.before, current.col = before, col
+  refresh_text()
+  if current.text == "" and not current.streaming then
     return false
   end
-  current.text, current.before, current.col = rest, before, col
   render()
   return true
 end
@@ -381,12 +417,18 @@ local function accept_part(part)
   if not current or part == nil or part == "" then
     return
   end
-  local rest = current.text:sub(#part + 1)
-  clear()
+  local sugg = current
+  pcall(vim.api.nvim_buf_clear_namespace, sugg.bufnr, ns, 0, -1)
   insert(part)
-  if rest ~= "" then
-    local bufnr, row, col, before = cursor_state()
-    current = { bufnr = bufnr, row = row, col = col, before = before, text = rest }
+  -- keep the same suggestion (it may still be streaming), anchored at the new cursor
+  local _, row, col, before = cursor_state()
+  sugg.offset = sugg.offset + #part
+  sugg.row, sugg.col, sugg.before = row, col, before
+  current = sugg
+  refresh_text()
+  if current.text == "" and not current.streaming then
+    clear()
+  else
     render()
   end
 end
@@ -395,7 +437,8 @@ function M.has_suggestion()
   if current and (vim.fn.pumvisible() == 1 or not advance()) then
     clear()
   end
-  return current ~= nil
+  -- (a suggestion still streaming may have nothing to show yet)
+  return current ~= nil and current.text ~= ""
 end
 
 function M.accept()

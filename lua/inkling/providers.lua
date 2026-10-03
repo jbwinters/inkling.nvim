@@ -91,139 +91,350 @@ function M.untag(s)
   return s:match("<completion>(.-)</completion>") or s:match("<completion>(.*)$") or s:match("^(.-)</completion>") or ""
 end
 
-local TEXT_SCHEMA = {
+-- While streaming: the text inside <completion> so far, without a half-arrived
+-- closing tag. nil until the opening tag has arrived.
+local function partial_untag(s)
+  local _, e = s:find("<completion>", 1, true)
+  if not e then
+    return nil
+  end
+  local body = s:sub(e + 1)
+  local close = body:find("</completion>", 1, true)
+  if close then
+    return body:sub(1, close - 1)
+  end
+  -- drop a trailing prefix of "</completion>" that may still be arriving
+  for k = math.min(#body, 12), 1, -1 do
+    if ("</completion>"):sub(1, k) == body:sub(-k) then
+      return body:sub(1, #body - k)
+    end
+  end
+  return body
+end
+
+local function utf8_char(cp)
+  if cp < 0x80 then
+    return string.char(cp)
+  elseif cp < 0x800 then
+    return string.char(0xC0 + math.floor(cp / 0x40), 0x80 + cp % 0x40)
+  elseif cp < 0x10000 then
+    return string.char(0xE0 + math.floor(cp / 0x1000), 0x80 + math.floor(cp / 0x40) % 0x40, 0x80 + cp % 0x40)
+  end
+  return string.char(0xF0 + math.floor(cp / 0x40000), 0x80 + math.floor(cp / 0x1000) % 0x40,
+    0x80 + math.floor(cp / 0x40) % 0x40, 0x80 + cp % 0x40)
+end
+
+local ESCAPES = { n = "\n", t = "\t", r = "\r", b = "\b", f = "\f", ['"'] = '"', ["\\"] = "\\", ["/"] = "/" }
+
+-- While streaming JSON: the value of string field `field` decoded so far.
+-- Pure Lua (runs in a fast context).
+function M.partial_json_field(s, field)
+  local _, e = s:find('"' .. field .. '"%s*:%s*"')
+  if not e then
+    return nil
+  end
+  local out, i = {}, e + 1
+  while i <= #s do
+    local c = s:sub(i, i)
+    if c == '"' then
+      break
+    elseif c == "\\" then
+      local n = s:sub(i + 1, i + 1)
+      if n == "" then
+        break
+      elseif n == "u" then
+        local hex = s:sub(i + 2, i + 5)
+        if not hex:match("^%x%x%x%x$") then
+          break
+        end
+        local cp = tonumber(hex, 16)
+        i = i + 6
+        if cp >= 0xD800 and cp <= 0xDBFF then
+          local lo = s:match("^\\u(%x%x%x%x)", i)
+          if not lo then
+            break
+          end
+          cp = 0x10000 + (cp - 0xD800) * 0x400 + (tonumber(lo, 16) - 0xDC00)
+          i = i + 6
+        end
+        table.insert(out, utf8_char(cp))
+      else
+        table.insert(out, ESCAPES[n] or n)
+        i = i + 2
+      end
+    else
+      table.insert(out, c)
+      i = i + 1
+    end
+  end
+  return table.concat(out)
+end
+
+M.TEXT_SCHEMA = {
   type = "object",
   properties = { text = { type = "string", description = "Exact text to insert at the cursor." } },
   required = { "text" },
   additionalProperties = false,
 }
 
-local builders = {}
+---------------------------------------------------------------------------
+-- Jobs: what to send, independent of provider.
+--   system, project (cached), head (cached when large), tail,
+--   output = "tags" | "json", schema (json), field (json value to stream),
+--   fim = { prefix, suffix } (ollama native FIM), max_tokens
+---------------------------------------------------------------------------
 
-function builders.openai(p, ctx)
-  local headers = {}
-  local key = config.api_key(p)
-  if key and key ~= "" then
-    headers["Authorization"] = "Bearer " .. key
-  end
-  local body = {
-    model = p.model,
-    max_completion_tokens = config.options.max_tokens,
-    messages = {
-      { role = "system", content = M.system_prompt(p.output) },
-      { role = "user", content = M.user_prompt(ctx) },
-    },
+function M.completion_job(ctx, p)
+  local head, tail = file_prompt_parts(ctx)
+  local output = p.kind == "ollama" and "tags" or (p.output or "tags")
+  return {
+    system = M.system_prompt(output),
+    project = project_prompt(ctx),
+    head = head,
+    tail = tail,
+    output = output,
+    schema = M.TEXT_SCHEMA,
+    field = "text",
+    fim = p.kind == "ollama" and p.fim and { prefix = ctx.prefix, suffix = ctx.suffix } or nil,
+    max_tokens = config.options.max_tokens,
+    prompt_chars = #ctx.prefix + #ctx.suffix + #(ctx.project or "") + #(ctx.edits or ""),
   }
-  if p.output == "json" then
-    body.response_format = { type = "json_schema", json_schema = { name = "insert", strict = true, schema = TEXT_SCHEMA } }
-  end
-  body = vim.tbl_extend("force", body, p.extra_body or {})
-  return headers, body, function(resp)
-    local choice = resp.choices and resp.choices[1]
-    local content = choice and choice.message and choice.message.content
-    resp._truncated = choice and choice.finish_reason == "length"
-    if p.output == "json" then
-      local ok, obj = pcall(vim.json.decode, content or "")
-      return ok and type(obj) == "table" and obj.text or ""
-    end
-    return M.untag(content)
-  end
 end
 
-function builders.anthropic(p, ctx)
-  local headers = {
-    ["x-api-key"] = config.api_key(p) or "",
-    ["anthropic-version"] = "2023-06-01",
-  }
-  local content = {}
-  local proj = project_prompt(ctx)
-  if proj then
-    table.insert(content, { type = "text", text = proj, cache_control = { type = "ephemeral" } })
-  end
-  local head, tail = file_prompt_parts(ctx)
-  -- second cache breakpoint: the file above the cursor line (only worth it for big files)
-  if #head > 4000 then
-    table.insert(content, { type = "text", text = head, cache_control = { type = "ephemeral" } })
-    table.insert(content, { type = "text", text = tail })
-  else
-    table.insert(content, { type = "text", text = head .. tail })
-  end
-  local body = {
-    model = p.model,
-    max_tokens = config.options.max_tokens,
-    system = M.system_prompt(p.output),
-    messages = { { role = "user", content = content } },
-  }
-  if p.output == "json" then
-    body.output_config = { format = { type = "json_schema", schema = TEXT_SCHEMA } }
-  else
-    body.stop_sequences = { "</completion>" }
-  end
-  body = vim.tbl_deep_extend("force", body, p.extra_body or {})
-  return headers, body, function(resp)
-    local parts = {}
-    for _, block in ipairs(resp.content or {}) do
-      if block.type == "text" then
-        table.insert(parts, block.text)
+local function user_text(job)
+  return (job.project and (job.project .. "\n\n") or "") .. job.head .. job.tail
+end
+
+-- Per kind: request headers/body, plus a stream parser that turns each
+-- response line into state { text, usage, stop }.
+local kinds = {}
+
+kinds.openai = {
+  request = function(p, job)
+    local headers = {}
+    local key = config.api_key(p)
+    if key and key ~= "" then
+      headers["Authorization"] = "Bearer " .. key
+    end
+    local body = {
+      model = p.model,
+      max_completion_tokens = job.max_tokens,
+      stream = true,
+      stream_options = { include_usage = true },
+      messages = {
+        { role = "system", content = job.system },
+        { role = "user", content = user_text(job) },
+      },
+    }
+    if job.output == "json" then
+      body.response_format = { type = "json_schema", json_schema = { name = "reply", strict = true, schema = job.schema } }
+    end
+    return headers, vim.tbl_extend("force", body, p.extra_body or {})
+  end,
+  parse = function(st, line)
+    local data = line:match("^data:%s*(.*)$")
+    if not data or data == "[DONE]" then
+      return
+    end
+    local ok, ev = pcall(vim.json.decode, data)
+    if not ok or type(ev) ~= "table" then
+      return
+    end
+    if ev.error then
+      st.error = type(ev.error) == "table" and ev.error.message or tostring(ev.error)
+    end
+    local choice = ev.choices and ev.choices[1]
+    if choice then
+      if choice.delta and type(choice.delta.content) == "string" then
+        st.text = st.text .. choice.delta.content
+      end
+      if choice.finish_reason and choice.finish_reason ~= vim.NIL then
+        st.truncated = choice.finish_reason == "length"
       end
     end
-    local out = table.concat(parts)
-    resp._truncated = resp.stop_reason == "max_tokens"
-    M.last_usage = resp.usage
-    if p.output == "json" then
-      local ok, obj = pcall(vim.json.decode, out)
-      return ok and type(obj) == "table" and obj.text or ""
+    if type(ev.usage) == "table" then
+      st.raw_usage = ev.usage
     end
-    return M.untag(out)
+  end,
+}
+
+kinds.anthropic = {
+  request = function(p, job)
+    local headers = {
+      ["x-api-key"] = config.api_key(p) or "",
+      ["anthropic-version"] = "2023-06-01",
+    }
+    local content = {}
+    if job.project then
+      table.insert(content, { type = "text", text = job.project, cache_control = { type = "ephemeral" } })
+    end
+    -- second cache breakpoint: the file above the cursor line (only worth it for big files)
+    if #job.head > 4000 then
+      table.insert(content, { type = "text", text = job.head, cache_control = { type = "ephemeral" } })
+      table.insert(content, { type = "text", text = job.tail })
+    else
+      table.insert(content, { type = "text", text = job.head .. job.tail })
+    end
+    local body = {
+      model = p.model,
+      max_tokens = job.max_tokens,
+      stream = true,
+      system = job.system,
+      messages = { { role = "user", content = content } },
+    }
+    if job.output == "json" then
+      body.output_config = { format = { type = "json_schema", schema = job.schema } }
+    else
+      body.stop_sequences = { "</completion>" }
+    end
+    return headers, vim.tbl_deep_extend("force", body, p.extra_body or {})
+  end,
+  parse = function(st, line)
+    local data = line:match("^data:%s*(.*)$")
+    if not data then
+      return
+    end
+    local ok, ev = pcall(vim.json.decode, data)
+    if not ok or type(ev) ~= "table" then
+      return
+    end
+    if ev.type == "message_start" and ev.message then
+      st.raw_usage = ev.message.usage
+    elseif ev.type == "content_block_delta" and ev.delta and ev.delta.type == "text_delta" then
+      st.text = st.text .. ev.delta.text
+    elseif ev.type == "message_delta" then
+      if ev.usage and st.raw_usage then
+        st.raw_usage.output_tokens = ev.usage.output_tokens
+      end
+      if ev.delta and ev.delta.stop_reason then
+        st.truncated = ev.delta.stop_reason == "max_tokens"
+      end
+    elseif ev.type == "error" then
+      st.error = ev.error and ev.error.message or "stream error"
+    end
+  end,
+}
+
+kinds.ollama = {
+  request = function(p, job)
+    local body
+    if job.fim then
+      body = { model = p.model, prompt = job.fim.prefix, suffix = job.fim.suffix }
+    else
+      body = { model = p.model, system = job.system, prompt = user_text(job) }
+      if job.output == "json" then
+        body.format = job.schema
+      end
+    end
+    body.stream = true
+    body.options = { num_predict = job.max_tokens, temperature = config.options.temperature }
+    return {}, vim.tbl_deep_extend("force", body, p.extra_body or {})
+  end,
+  parse = function(st, line)
+    local ok, ev = pcall(vim.json.decode, line)
+    if not ok or type(ev) ~= "table" then
+      return
+    end
+    if ev.error then
+      st.error = tostring(ev.error)
+    end
+    if type(ev.response) == "string" then
+      st.text = st.text .. ev.response
+    end
+    if ev.done then
+      st.truncated = ev.done_reason == "length"
+      st.raw_usage = { prompt_eval_count = ev.prompt_eval_count, eval_count = ev.eval_count }
+    end
+  end,
+}
+
+-- The usable result from raw model text: completion text (string) for tags /
+-- FIM / json-with-field, or the decoded object for json without a field.
+local function final_result(job, raw)
+  if job.fim then
+    return raw
+  elseif job.output == "json" then
+    local ok, obj = pcall(vim.json.decode, raw)
+    if not ok or type(obj) ~= "table" then
+      return job.field and "" or nil
+    end
+    if job.field then
+      return type(obj[job.field]) == "string" and obj[job.field] or ""
+    end
+    return obj
   end
+  return M.untag(raw)
 end
 
-function builders.ollama(p, ctx)
-  local body
-  if p.fim then
-    body = { model = p.model, prompt = ctx.prefix, suffix = ctx.suffix }
-  else
-    body = { model = p.model, system = M.system_prompt("tags"), prompt = M.user_prompt(ctx) }
+local function partial_result(job, raw)
+  if job.fim then
+    return raw
+  elseif job.output == "json" then
+    return job.field and M.partial_json_field(raw, job.field) or nil
   end
-  body.stream = false
-  body.options = { num_predict = config.options.max_tokens, temperature = config.options.temperature }
-  body = vim.tbl_deep_extend("force", body, p.extra_body or {})
-  return {}, body, function(resp)
-    resp._truncated = resp.done_reason == "length"
-    return p.fim and resp.response or M.untag(resp.response)
-  end
+  return partial_untag(raw)
 end
 
+-- Run a job on the active provider, streaming.
+--   on_partial(text)        text so far (fast context; may be nil-skipped)
+--   on_done(err, result)    final result (fast context)
+-- Usage is logged when the request ends, including when it's cancelled.
 ---@return vim.SystemObj|nil
-function M.complete(ctx, cb)
+function M.run(job, on_partial, on_done)
   local p, name = config.provider()
-  local build = builders[p.kind]
-  if not build then
-    cb(("provider %s has unknown kind %q"):format(name, tostring(p.kind)))
+  local kind = kinds[p.kind]
+  if not kind then
+    on_done(("provider %s has unknown kind %q"):format(name, tostring(p.kind)))
     return nil
   end
   if p.kind ~= "ollama" and (config.api_key(p) or "") == "" then
-    cb(("no API key for provider %s (set $%s)"):format(name, p.api_key_env or "?"))
+    on_done(("no API key for provider %s (set $%s)"):format(name, p.api_key_env or "?"))
     return nil
   end
-  local headers, body, extract = build(p, ctx)
-  return http.post_json(p.url, headers, body, config.options.timeout, function(err, resp)
-    if err then
-      return cb(err)
+  local headers, body = kind.request(p, job)
+  local st = { text = "" }
+  local last_partial = nil
+  return http.post_stream(p.url, headers, body, config.options.timeout, function(line)
+    kind.parse(st, line)
+    if on_partial then
+      local part = partial_result(job, st.text)
+      if part and part ~= last_partial then
+        last_partial = part
+        on_partial(part)
+      end
     end
-    local u = usage.normalize(p.kind, resp)
-    if u then
-      vim.schedule(function()
+  end, function(err)
+    err = err or st.error
+    local cancelled = err == "cancelled"
+    -- spend: what the provider reported; for a cancelled request without a
+    -- report yet, an upper-bound estimate
+    local u = st.raw_usage and usage.normalize(p.kind, { usage = st.raw_usage, prompt_eval_count = st.raw_usage.prompt_eval_count, eval_count = st.raw_usage.eval_count })
+    if u and cancelled then
+      u.output = math.max(u.output or 0, math.floor(#st.text / 4))
+    end
+    vim.schedule(function()
+      if u then
         usage.record(name, p.model, u)
-      end)
+      elseif cancelled and job.prompt_chars then
+        usage.record_cancelled(name, p.model, job.prompt_chars)
+      end
+    end)
+    if err then
+      return on_done(err)
     end
-    local text = extract(resp) or ""
-    -- Cut off by max_tokens: keep only complete lines.
-    if resp._truncated and text:find("\n") then
-      text = text:match("^(.*)\n")
+    local result = final_result(job, st.text)
+    -- cut off by max_tokens: keep only complete lines
+    if type(result) == "string" and st.truncated and result:find("\n") then
+      result = result:match("^(.*)\n")
     end
-    cb(nil, text)
+    on_done(nil, result)
   end)
+end
+
+-- Non-interactive completion (tests, benchmark): cb(err, text).
+function M.complete(ctx, cb)
+  local p = config.provider()
+  return M.run(M.completion_job(ctx, p), nil, cb)
 end
 
 return M
