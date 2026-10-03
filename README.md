@@ -39,6 +39,7 @@ request. Suggestions hide while Vim's completion menu is open.
 | `:Inkling use anthropic` | switch provider |
 | `:Inkling use gpt-5.4-mini` | switch model for the current provider |
 | `:Inkling use openai/gpt-5.4-mini` | both |
+| `:Inkling use default` | forget the choice, back to your config / automatic |
 | `:Inkling context` | show exactly what the model would see at the cursor |
 | `:Inkling spend` | spend today, last 7 days (by day), this month (by model), all time |
 
@@ -46,10 +47,17 @@ Set `vim.b.inkling_disabled = true` to turn it off for one buffer.
 
 ## Models
 
+Which model is used, first match wins:
+
+1. your last `:Inkling use …` choice (remembered across sessions)
+2. `provider` in `setup()`
+3. automatic: **gpt-6-luna** if `$OPENAI_API_KEY` is set (cheapest), otherwise
+   **claude-sonnet-5-5** if `$ANTHROPIC_API_KEY` is set (most accurate)
+
 | Provider | Default model | Notes |
 |---|---|---|
-| `anthropic` (default) | `claude-sonnet-5-5` | Most accurate in testing (35/40 exact on a real-code benchmark), ~1.5s |
-| `openai` | `gpt-6-luna` | Reasoning off; 23/40 exact, ~1.3–1.8s |
+| `openai` | `gpt-6-luna` | Cheapest (~$0.001/suggestion); 23/40 exact on a real-code benchmark, ~1.3–1.8s |
+| `anthropic` | `claude-sonnet-5-5` | Most accurate (35/40 exact), ~1.5s, ~$0.01–0.02/suggestion |
 | `ollama` | `qwen2.5-coder:7b` | Local fill-in-the-middle; small prompt, no project context |
 
 Any OpenAI-compatible endpoint (OpenRouter, LM Studio, vLLM, ...) works as an
@@ -97,7 +105,7 @@ Everything is optional; these are the defaults.
 
 ```lua
 require('inkling').setup({
-  provider = 'anthropic',
+  provider = nil,  -- automatic (see Models)
   debounce_ms = 250,
   max_tokens = 256,
   context = {

@@ -2,8 +2,10 @@ local M = {}
 
 M.defaults = {
   enabled = true,
-  -- Which entry in `providers` to use.
-  provider = "anthropic",
+  -- Which entry in `providers` to use. nil = automatic: "openai" (gpt-6-luna,
+  -- cheapest) when its API key is available, else "anthropic" (claude-sonnet-5-5).
+  -- A choice made with `:Inkling use` is remembered and takes precedence.
+  provider = nil,
   -- Milliseconds to wait after the last keystroke before requesting a completion.
   debounce_ms = 250,
   -- What to send with each request. Providers can override any of this with
@@ -78,15 +80,76 @@ M.options = vim.deepcopy(M.defaults)
 
 function M.setup(opts)
   M.options = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
+  auto_choice = nil
+end
+
+local auto_choice = nil
+
+-- First provider (in preference order) that has an API key.
+local function auto_provider()
+  if not auto_choice then
+    auto_choice = "openai"
+    for _, name in ipairs({ "openai", "anthropic" }) do
+      local p = M.options.providers[name]
+      if p and (M.api_key(p) or "") ~= "" then
+        auto_choice = name
+        break
+      end
+    end
+  end
+  return auto_choice
+end
+
+-- Is the provider picked automatically (nothing configured or saved)?
+function M.is_auto()
+  return M.options.provider == nil
 end
 
 function M.provider()
-  local name = M.options.provider
+  local name = M.options.provider or auto_provider()
   local p = M.options.providers[name]
   if not p then
     error(("inkling: unknown provider %q"):format(name))
   end
   return p, name
+end
+
+---------------------------------------------------------------------------
+-- `:Inkling use` choices persist across sessions
+---------------------------------------------------------------------------
+
+local function choice_path()
+  return vim.fn.stdpath("data") .. "/inkling/choice.json"
+end
+
+function M.save_choice(provider, model)
+  local path = choice_path()
+  if not provider then
+    os.remove(path)
+    return
+  end
+  vim.fn.mkdir(vim.fs.dirname(path), "p")
+  local fd = io.open(path, "w")
+  if fd then
+    fd:write(vim.json.encode({ provider = provider, model = model }))
+    fd:close()
+  end
+end
+
+function M.load_choice()
+  local fd = io.open(choice_path(), "r")
+  if not fd then
+    return
+  end
+  local ok, c = pcall(vim.json.decode, fd:read("*a"))
+  fd:close()
+  if ok and type(c) == "table" and c.provider and M.options.providers[c.provider] then
+    M.options.provider = c.provider
+    if c.model then
+      M.options.providers[c.provider].model = c.model
+    end
+    return c
+  end
 end
 
 -- Global context options with the active provider's overrides applied.

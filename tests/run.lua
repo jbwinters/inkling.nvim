@@ -4,6 +4,13 @@ local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 vim.opt.rtp:prepend(root)
 local gw = require("inkling")
 gw.setup({ provider = _G.arg[1] or "openai", debounce_ms = 10 })
+-- pin the provider under test (a remembered `:Inkling use` choice would override it)
+do
+  local cfg = require("inkling.config")
+  cfg.options.provider = _G.arg[1] or "openai"
+  cfg.options.providers[_G.arg[1] or "openai"].model = require("inkling.config").defaults.providers[_G.arg[1] or "openai"].model
+end
+
 vim.api.nvim_exec_autocmds("VimEnter", {})
 
 local failures = 0

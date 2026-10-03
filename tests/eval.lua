@@ -29,6 +29,13 @@ if os.getenv("INKLING_EVAL_EXTRA") then
 end
 override.output = output
 inkling.setup({ provider = provider, providers = { [provider] = override } })
+-- pin the provider under test (a remembered `:Inkling use` choice would override it)
+do
+  local cfg = require("inkling.config")
+  cfg.options.provider = provider
+  cfg.options.providers[provider].model = override.model or require("inkling.config").defaults.providers[provider].model
+end
+
 output = require("inkling.config").provider().output
 print("model: " .. require("inkling.config").provider().model .. " extra: " .. (os.getenv("INKLING_EVAL_EXTRA") or "-"))
 local providers = require("inkling.providers")

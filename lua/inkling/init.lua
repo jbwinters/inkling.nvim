@@ -235,6 +235,7 @@ local function eligible(bufnr)
   return not vim.tbl_contains(config.options.disabled_filetypes, vim.bo[bufnr].filetype)
 end
 
+local saved_opts = nil -- setup() options, to restore on `:Inkling use default`
 local inflight_info = nil -- { provider, model, chars } of the request in flight
 
 local function cancel_inflight()
@@ -492,7 +493,7 @@ local function status()
   local p, name = config.provider()
   local parts = {
     "inkling " .. (config.options.enabled and "on" or "off"),
-    name .. " " .. p.model,
+    name .. " " .. p.model .. (config.is_auto() and " (auto)" or ""),
   }
   if p.kind ~= "ollama" and (config.api_key(p) or "") == "" then
     table.insert(parts, "NO API KEY ($" .. (p.api_key_env or "?") .. ")")
@@ -556,33 +557,43 @@ local function set_enabled(on)
   vim.notify("inkling " .. (on and "on" or "off"))
 end
 
--- `:Inkling use anthropic`, `:Inkling use gpt-5.4-mini`, `:Inkling use openai/gpt-5.4-mini`
+-- `:Inkling use anthropic`, `:Inkling use gpt-5.4-mini`, `:Inkling use openai/gpt-5.4-mini`,
+-- `:Inkling use default` (forget it). The choice is remembered across sessions.
 local function use(arg)
   if not arg then
     return status()
   end
-  local prov, model = arg:match("^([^/]+)/(.+)$")
-  if not prov then
-    if config.options.providers[arg] then
-      prov = arg
-    else
-      model = arg
+  if arg == "default" then
+    config.options.provider = nil
+    config.save_choice(nil)
+    config.setup(saved_opts) -- back to configured models
+  else
+    local prov, model = arg:match("^([^/]+)/(.+)$")
+    if not prov then
+      if config.options.providers[arg] then
+        prov = arg
+      else
+        model = arg
+      end
     end
-  end
-  if prov then
-    if not config.options.providers[prov] then
-      return vim.notify("inkling: unknown provider " .. prov, vim.log.levels.ERROR)
+    if prov then
+      if not config.options.providers[prov] then
+        return vim.notify("inkling: unknown provider " .. prov, vim.log.levels.ERROR)
+      end
+      config.options.provider = prov
     end
-    config.options.provider = prov
-  end
-  if model then
-    config.provider().model = model
+    local p, name = config.provider()
+    if model then
+      p.model = model
+    end
+    config.options.provider = name
+    config.save_choice(name, model and p.model or nil)
   end
   cache, cache_order, last_error = {}, {}, nil
   -- providers can override context options (e.g. ollama turns project context off)
   project.refresh(vim.api.nvim_get_current_buf())
   local p, name = config.provider()
-  vim.notify(("inkling: %s %s"):format(name, p.model))
+  vim.notify(("inkling: %s %s%s"):format(name, p.model, config.is_auto() and " (auto)" or ", remembered"))
 end
 
 local subcommands = {
@@ -619,7 +630,7 @@ local function create_command()
       if #args <= 2 then
         return { "on", "off", "toggle", "use", "context", "spend", "status" }
       elseif args[2] == "use" then
-        local out = {}
+        local out = { "default" }
         for name, p in pairs(config.options.providers) do
           table.insert(out, name)
           table.insert(out, name .. "/" .. p.model)
@@ -637,7 +648,9 @@ end
 ---------------------------------------------------------------------------
 
 function M.setup(opts)
+  saved_opts = opts
   config.setup(opts)
+  config.load_choice()
   vim.api.nvim_set_hl(0, "InklingSuggestion", { link = "Comment", default = true })
 
   local group = vim.api.nvim_create_augroup("inkling", { clear = true })
@@ -716,8 +729,9 @@ function M.setup(opts)
       local p, name = config.provider()
       if config.options.enabled and p.kind ~= "ollama" and #vim.api.nvim_list_uis() > 0
         and (config.api_key(p) or "") == "" then
-        vim.notify(("inkling: $%s isn't set, so %s suggestions are off"):format(p.api_key_env or "?", name),
-          vim.log.levels.WARN)
+        local msg = config.is_auto() and "inkling: no API key found ($OPENAI_API_KEY or $ANTHROPIC_API_KEY), so suggestions are off"
+          or ("inkling: $%s isn't set, so %s suggestions are off"):format(p.api_key_env or "?", name)
+        vim.notify(msg, vim.log.levels.WARN)
       end
     end, 200)
   end
