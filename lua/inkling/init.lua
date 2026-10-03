@@ -39,13 +39,30 @@ local function cache_put(key, text)
   cache[key] = text
 end
 
+local err_ns = vim.api.nvim_create_namespace("inkling_error")
+
+local function clear_error_hint()
+  pcall(vim.api.nvim_buf_clear_namespace, 0, err_ns, 0, -1)
+end
+
 local function report_error(msg)
   if msg == "cancelled" then
     return
   end
-  if msg ~= last_error then
-    last_error = msg
+  local first = msg ~= last_error
+  last_error = msg
+  if first then
     vim.notify("inkling: " .. msg, vim.log.levels.WARN)
+  end
+  -- Messages get overwritten by "-- INSERT --", so also show the problem
+  -- where the suggestion would have appeared (until the next keystroke).
+  if vim.api.nvim_get_mode().mode:sub(1, 1) == "i" then
+    clear_error_hint()
+    local row, col = unpack(vim.api.nvim_win_get_cursor(0))
+    pcall(vim.api.nvim_buf_set_extmark, 0, err_ns, row - 1, col, {
+      virt_text = { { "  inkling: " .. msg, "DiagnosticWarn" } },
+      virt_text_pos = "eol",
+    })
   end
 end
 
@@ -607,6 +624,10 @@ function M.setup(opts)
   vim.api.nvim_set_hl(0, "InklingSuggestion", { link = "Comment", default = true })
 
   local group = vim.api.nvim_create_augroup("inkling", { clear = true })
+  vim.api.nvim_create_autocmd({ "TextChangedI", "CursorMovedI", "InsertLeave" }, {
+    group = group,
+    callback = clear_error_hint,
+  })
   vim.api.nvim_create_autocmd("TextChangedI", {
     group = group,
     callback = function()
