@@ -1,6 +1,7 @@
 local config = require("inkling.config")
 local providers = require("inkling.providers")
 local project = require("inkling.context.project")
+local usage = require("inkling.usage")
 
 local M = {}
 
@@ -234,10 +235,17 @@ local function eligible(bufnr)
   return not vim.tbl_contains(config.options.disabled_filetypes, vim.bo[bufnr].filetype)
 end
 
+local inflight_info = nil -- { provider, model, chars } of the request in flight
+
 local function cancel_inflight()
   if inflight then
     pcall(inflight.kill, inflight, 15)
     inflight = nil
+    -- the provider may bill a request we abandon; log an estimate
+    if inflight_info then
+      usage.record_cancelled(inflight_info.provider, inflight_info.model, inflight_info.chars)
+    end
+    inflight_info = nil
   end
 end
 
@@ -272,6 +280,8 @@ function M.request()
   local id = request_id
   local started = uv.hrtime()
   local entry = { chars = #ctx.prefix + #ctx.suffix + #(ctx.project or ""), file = ctx.filename }
+  local prov, prov_name = config.provider()
+  inflight_info = { provider = prov_name, model = prov.model, chars = entry.chars }
   inflight = providers.complete(ctx, function(err, text)
     vim.schedule(function()
       entry.ms = math.floor((uv.hrtime() - started) / 1e6)
@@ -279,7 +289,7 @@ function M.request()
         entry.outcome = "superseded"
         return record(entry)
       end
-      inflight = nil
+      inflight, inflight_info = nil, nil
       if err then
         entry.outcome = "error: " .. err
         record(entry)
@@ -495,6 +505,10 @@ local function status()
     end
     table.insert(parts, ("avg %.1fs over %d requests"):format(total / #recent / 1000, #recent))
   end
+  local today, n = usage.today_cost()
+  if n > 0 then
+    table.insert(parts, ("today %s"):format(today < 0.01 and "<$0.01" or ("$%.2f"):format(today)))
+  end
   local msg = table.concat(parts, " · ")
   if last_error then
     msg = msg .. "\nlast error: " .. last_error
@@ -584,6 +598,9 @@ local subcommands = {
   end,
   use = use,
   context = show_context,
+  spend = function()
+    vim.notify(table.concat(usage.report(), "\n"))
+  end,
 }
 
 local function create_command()
@@ -591,16 +608,16 @@ local function create_command()
     local sub = cmd.fargs[1] or "status"
     local fn = subcommands[sub]
     if not fn then
-      return vim.notify("inkling: unknown command " .. sub .. " (try: on, off, toggle, use, context)", vim.log.levels.ERROR)
+      return vim.notify("inkling: unknown command " .. sub .. " (try: on, off, toggle, use, context, spend)", vim.log.levels.ERROR)
     end
     fn(cmd.fargs[2])
   end, {
     nargs = "*",
-    desc = "inkling: status | on | off | toggle | use <provider or model> | context",
+    desc = "inkling: status | on | off | toggle | use <provider or model> | context | spend",
     complete = function(_, line)
       local args = vim.split(line, "%s+")
       if #args <= 2 then
-        return { "on", "off", "toggle", "use", "context", "status" }
+        return { "on", "off", "toggle", "use", "context", "spend", "status" }
       elseif args[2] == "use" then
         local out = {}
         for name, p in pairs(config.options.providers) do

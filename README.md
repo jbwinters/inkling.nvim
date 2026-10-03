@@ -40,6 +40,7 @@ request. Suggestions hide while Vim's completion menu is open.
 | `:Inkling use gpt-5.4-mini` | switch model for the current provider |
 | `:Inkling use openai/gpt-5.4-mini` | both |
 | `:Inkling context` | show exactly what the model would see at the cursor |
+| `:Inkling spend` | spend today, last 7 days (by day), this month (by model), all time |
 
 Set `vim.b.inkling_disabled = true` to turn it off for one buffer.
 
@@ -53,6 +54,20 @@ Set `vim.b.inkling_disabled = true` to turn it off for one buffer.
 
 Any OpenAI-compatible endpoint (OpenRouter, LM Studio, vLLM, ...) works as an
 extra provider with `kind = 'openai'` (see Configuration).
+
+## Spend
+
+Every request's token usage (as reported by the provider) is priced and
+appended to `~/.local/share/nvim/inkling/usage.jsonl`. `:Inkling` shows today's
+total; `:Inkling spend` shows the breakdown. Prices for the default models are
+built in; add others with `prices = { ['model'] = { input = …, output = …,
+cache_read = …, cache_write = … } }` (USD per 1M tokens).
+
+Requests cancelled because you kept typing are listed separately as an upper
+bound: providers may or may not bill input they had already read.
+
+Rough cost per suggestion with full project context (~10k input tokens):
+Sonnet 5.5 about $0.01–0.02 (less when cached), luna about $0.001.
 
 ## What the model sees
 

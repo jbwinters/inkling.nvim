@@ -2,6 +2,7 @@
 -- the completion text back out of the response.
 local config = require("inkling.config")
 local http = require("inkling.http")
+local usage = require("inkling.usage")
 
 local M = {}
 
@@ -203,6 +204,12 @@ function M.complete(ctx, cb)
   return http.post_json(p.url, headers, body, config.options.timeout, function(err, resp)
     if err then
       return cb(err)
+    end
+    local u = usage.normalize(p.kind, resp)
+    if u then
+      vim.schedule(function()
+        usage.record(name, p.model, u)
+      end)
     end
     local text = extract(resp) or ""
     -- Cut off by max_tokens: keep only complete lines.

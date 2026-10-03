@@ -24,6 +24,9 @@ M.defaults = {
     },
   },
   max_tokens = 256,
+  -- USD per 1M tokens for spend tracking, keyed by model; extends the built-in
+  -- list in lua/inkling/usage.lua. e.g. ["gpt-5.4-mini"] = { input = 0.25, output = 2, cache_read = 0.025 }
+  prices = {},
   temperature = 0.1,
   -- Request timeout in seconds.
   timeout = 15,
