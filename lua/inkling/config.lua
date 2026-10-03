@@ -13,6 +13,8 @@ M.defaults = {
   context = {
     -- The whole current file is sent if it fits; otherwise a window around the cursor.
     current_file_max_chars = 60000,
+    -- Diffs of what you changed recently (any file), so the model knows what you're doing.
+    recent_edits = { enabled = true, max_chars = 4000 },
     project = {
       enabled = true,
       max_chars = 40000,        -- total budget for related files
@@ -70,7 +72,7 @@ M.defaults = {
       -- Set to false to use a chat-style prompt instead.
       fim = true,
       -- Local models have small context windows; keep the prompt small.
-      context = { current_file_max_chars = 8000, project = { enabled = false } },
+      context = { current_file_max_chars = 8000, project = { enabled = false }, recent_edits = { enabled = false } },
       extra_body = { options = { num_ctx = 8192 } },
     },
   },

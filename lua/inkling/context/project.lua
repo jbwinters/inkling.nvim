@@ -341,6 +341,8 @@ local function project_root(path)
   return vim.fs.normalize(root)
 end
 
+M.root = project_root
+
 ---@param bufnr integer
 ---@param cb fun(text: string, summary: string[])
 function M.build(bufnr, cb)

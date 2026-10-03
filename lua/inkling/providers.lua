@@ -34,8 +34,10 @@ function M.system_prompt(output)
     "Complete the current line, or the current logical block (e.g. the rest of a function body) when that is clearly intended.",
     "Preserve the file's indentation style. If the code around the cursor looks broken or mid-edit, still give your",
     "best short continuation; do not comment on it.",
-    "Related project files (imports, same-directory files, files that use this one) may be provided first as reference:",
-    "use them to get names, signatures and conventions right, but only ever write text for the current file.",
+    "Related project files (imports, same-directory files, files that use this one) may be provided first as reference,",
+    "followed by diffs of the user's recent edits, which show what they are in the middle of doing.",
+    "Use them to get names, signatures and conventions right and to continue the user's current change consistently,",
+    "but only ever write text for the current file at the cursor.",
   }, " ")
 end
 
@@ -55,6 +57,10 @@ local function file_prompt_parts(ctx)
   local note = ctx.truncated and ' note="excerpt around the cursor; the file is longer"' or ""
   local above = ctx.prefix:sub(1, #ctx.prefix - #ctx.before)
   local head = ('<current_file path="%s" language="%s"%s>\n%s'):format(ctx.filename, ctx.filetype, note, above)
+  if ctx.edits and ctx.edits ~= "" then
+    -- recent changes only update when you leave insert mode, so they sit in the cached part
+    head = "<recent_edits>\n" .. ctx.edits .. "\n</recent_edits>\n\n" .. head
+  end
   local tail = ("%s%s%s\n</current_file>"):format(ctx.before, CURSOR, ctx.suffix)
   if M.opts.cursor_hint then
     -- Restating the cursor line helps chat models continue mid-identifier

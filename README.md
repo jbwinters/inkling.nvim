@@ -91,6 +91,11 @@ Sonnet 5.5 about $0.01–0.02 (less when cached), luna about $0.001.
    - **Downstream**: files that import this one, as snippets around their uses of
      it (found with `rg`).
 
+3. **Your recent edits**: diffs of what you changed in the last few minutes, in
+   any file (up to 5 files, 4k characters). If you just renamed a method in one
+   file, completions in another file use the new name. Updated when you leave
+   insert mode or change text in normal mode.
+
 Imports are resolved for Python, JS/TS, Lua, Elixir, Go, Rust and C/C++; outside
 packages are skipped. Outlines come from per-language declaration patterns plus
 indentation, so treesitter parsers aren't needed.
@@ -110,6 +115,7 @@ require('inkling').setup({
   max_tokens = 256,
   context = {
     current_file_max_chars = 60000,
+    recent_edits = { enabled = true, max_chars = 4000 },
     project = {
       enabled = true, max_chars = 40000, small_file_chars = 3000,
       upstream = true, max_upstream = 10,
@@ -143,6 +149,7 @@ Change the suggestion colour with `:hi InklingSuggestion guifg=#665c54`.
 ```
 nvim --headless -u NONE -l tests/run.lua anthropic        # request, display, accept (real API)
 nvim --headless -u NONE -l tests/context.lua              # outlines + import resolution fixtures
+nvim --headless -u NONE -l tests/edits.lua                # recent-edit tracking
 nvim --headless -u NONE -l tests/live_context.lua openai  # latency with full project context
 INKLING_EVAL_DIR=~/code nvim --headless -u NONE -l tests/eval.lua anthropic 40   # accuracy benchmark
 ```

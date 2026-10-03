@@ -1,6 +1,7 @@
 local config = require("inkling.config")
 local providers = require("inkling.providers")
 local project = require("inkling.context.project")
+local edits = require("inkling.context.edits")
 local usage = require("inkling.usage")
 
 local M = {}
@@ -155,9 +156,16 @@ local function build_context()
     proj, proj_version = project.get(bufnr)
   end
   local name = vim.api.nvim_buf_get_name(bufnr)
+  local recent, edits_version = "", 0
+  if opts.recent_edits.enabled then
+    local root = name ~= "" and project.root(vim.fs.normalize(vim.fn.fnamemodify(name, ":p"))) or nil
+    recent, edits_version = edits.render(root, opts.recent_edits.max_chars)
+  end
   return {
     project = proj,
     project_version = proj_version,
+    edits = recent,
+    edits_version = edits_version,
     truncated = truncated,
     bufnr = bufnr,
     row = row,
@@ -269,7 +277,7 @@ function M.request()
     return
   end
   local ctx = build_context()
-  local key = ctx.project_version .. "\0" .. ctx.prefix .. "\0" .. ctx.suffix
+  local key = ctx.project_version .. ":" .. ctx.edits_version .. "\0" .. ctx.prefix .. "\0" .. ctx.suffix
   if cache[key] then
     clear()
     show(ctx, cache[key])
@@ -528,6 +536,7 @@ local function show_context()
       ("# %s %s"):format(name, p.model),
       ("# current file: %d chars%s"):format(#ctx.prefix + #ctx.suffix, ctx.truncated and " (window around cursor)" or " (whole file)"),
       ("# project context: %d chars"):format(#ctx.project),
+      ("# recent edits: %d chars"):format(#(ctx.edits or "")),
     }
     for _, l in ipairs(summary) do
       table.insert(header, "#   " .. l)
@@ -695,10 +704,28 @@ function M.setup(opts)
     end))
   end
   vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost", "InsertLeave" }, { group = group, callback = refresh_later })
+  -- Recent edits: remember each buffer's text, checkpoint after each change
+  vim.api.nvim_create_autocmd("BufEnter", {
+    group = group,
+    callback = function(args)
+      if eligible(args.buf) then
+        edits.track(args.buf)
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "InsertLeave", "TextChanged", "BufLeave" }, {
+    group = group,
+    callback = function(args)
+      if eligible(args.buf) then
+        edits.checkpoint(args.buf)
+      end
+    end,
+  })
   vim.api.nvim_create_autocmd("BufWipeout", {
     group = group,
     callback = function(args)
       project.forget(args.buf)
+      edits.forget(args.buf)
       if refresh_timers[args.buf] then
         refresh_timers[args.buf]:close()
         refresh_timers[args.buf] = nil
