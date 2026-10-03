@@ -197,6 +197,7 @@ function M.completion_job(ctx, p)
     field = "text",
     fim = p.kind == "ollama" and p.fim and { prefix = ctx.prefix, suffix = ctx.suffix } or nil,
     max_tokens = config.options.max_tokens,
+    cache_head = true,
     prompt_chars = #ctx.prefix + #ctx.suffix + #(ctx.project or "") + #(ctx.edits or ""),
   }
 end
@@ -268,8 +269,9 @@ kinds.anthropic = {
     if job.project then
       table.insert(content, { type = "text", text = job.project, cache_control = { type = "ephemeral" } })
     end
-    -- second cache breakpoint: the file above the cursor line (only worth it for big files)
-    if #job.head > 4000 then
+    -- second cache breakpoint: the file above the cursor line (only worth it for
+    -- big files, and only for jobs that repeat with the same head)
+    if job.cache_head and #job.head > 4000 then
       table.insert(content, { type = "text", text = job.head, cache_control = { type = "ephemeral" } })
       table.insert(content, { type = "text", text = job.tail })
     else

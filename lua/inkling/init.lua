@@ -3,6 +3,7 @@ local providers = require("inkling.providers")
 local project = require("inkling.context.project")
 local edits = require("inkling.context.edits")
 local usage = require("inkling.usage")
+local nextedit = require("inkling.nextedit")
 
 local M = {}
 
@@ -605,6 +606,7 @@ local function set_enabled(on)
   config.options.enabled = on
   if not on then
     M.dismiss()
+    nextedit.clear()
   end
   vim.notify("inkling " .. (on and "on" or "off"))
 end
@@ -703,7 +705,13 @@ function M.setup(opts)
   saved_opts = opts
   config.setup(opts)
   config.load_choice()
-  vim.api.nvim_set_hl(0, "InklingSuggestion", { link = "Comment", default = true })
+  local function set_highlights()
+    vim.api.nvim_set_hl(0, "InklingSuggestion", { link = "Comment", default = true })
+    vim.api.nvim_set_hl(0, "InklingEditOld", { link = "DiffDelete", default = true })
+    vim.api.nvim_set_hl(0, "InklingEditNew", { link = "DiffAdd", default = true })
+    vim.api.nvim_set_hl(0, "InklingEditHint", { link = "Comment", default = true })
+  end
+  set_highlights()
 
   local group = vim.api.nvim_create_augroup("inkling", { clear = true })
   vim.api.nvim_create_autocmd({ "TextChangedI", "CursorMovedI", "InsertLeave" }, {
@@ -759,11 +767,18 @@ function M.setup(opts)
   vim.api.nvim_create_autocmd({ "InsertLeave", "TextChanged", "BufLeave" }, {
     group = group,
     callback = function(args)
+      if args.event ~= "InsertLeave" then
+        nextedit.clear()
+      end
       if eligible(args.buf) then
-        edits.checkpoint(args.buf)
+        local changed = edits.checkpoint(args.buf)
+        if changed and args.event ~= "BufLeave" then
+          nextedit.schedule(args.buf)
+        end
       end
     end,
   })
+  vim.api.nvim_create_autocmd({ "InsertEnter", "BufLeave" }, { group = group, callback = nextedit.clear })
   vim.api.nvim_create_autocmd("BufWipeout", {
     group = group,
     callback = function(args)
@@ -783,9 +798,7 @@ function M.setup(opts)
   })
   vim.api.nvim_create_autocmd("ColorScheme", {
     group = group,
-    callback = function()
-      vim.api.nvim_set_hl(0, "InklingSuggestion", { link = "Comment", default = true })
-    end,
+    callback = set_highlights,
   })
 
   create_command()

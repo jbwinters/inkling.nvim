@@ -47,6 +47,25 @@ request. Suggestions hide while Vim's completion menu is open.
 
 Set `vim.b.inkling_disabled = true` to turn it off for one buffer.
 
+### Next edit
+
+After you change something (leaving insert mode, or a normal-mode edit such as
+`cw`, `dd` or `:s`), inkling asks the model whether that implies another change
+in the same file: the next use of a renamed variable, a call site of a changed
+signature, a sibling branch that should match. If so, the lines are
+highlighted with the replacement shown below:
+
+| Normal-mode key | Does |
+|---|---|
+| `Tab` | jump to the predicted edit; press again to apply it |
+| `Esc` | dismiss |
+
+These keys are only mapped while a prediction is showing. Applying one is a
+single undo step, and often leads to the next prediction (e.g. the next call
+site). Each prediction is one request with your recent edits and the current
+file (~$0.005 with Sonnet, far less with luna). Turn it off with
+`next_edit = false`.
+
 ## Models
 
 Which model is used, first match wins:
@@ -118,6 +137,7 @@ Everything is optional; these are the defaults.
 require('inkling').setup({
   provider = nil,  -- automatic (see Models)
   debounce_ms = 250,
+  next_edit = true, next_edit_delay_ms = 500,
   max_tokens = 256,
   context = {
     current_file_max_chars = 60000,
@@ -149,7 +169,8 @@ require('inkling').setup({
 })
 ```
 
-Change the suggestion colour with `:hi InklingSuggestion guifg=#665c54`.
+Change the suggestion colour with `:hi InklingSuggestion guifg=#665c54`; next-edit
+colours are `InklingEditOld`, `InklingEditNew` and `InklingEditHint`.
 
 ## Tests
 
@@ -158,6 +179,7 @@ nvim --headless -u NONE -l tests/run.lua anthropic        # request, display, ac
 nvim --headless -u NONE -l tests/context.lua              # outlines + import resolution fixtures
 nvim --headless -u NONE -l tests/edits.lua                # recent-edit tracking
 nvim --headless -u NONE -l tests/stream.lua               # streaming display (fake provider)
+nvim --headless -u NONE -l tests/nextedit.lua             # next-edit prediction (fake provider)
 nvim --headless -u NONE -l tests/live_context.lua openai  # latency with full project context
 INKLING_EVAL_DIR=~/code nvim --headless -u NONE -l tests/eval.lua anthropic 40   # accuracy benchmark
 ```

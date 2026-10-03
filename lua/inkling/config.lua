@@ -8,6 +8,9 @@ M.defaults = {
   provider = nil,
   -- Milliseconds to wait after the last keystroke before requesting a completion.
   debounce_ms = 250,
+  -- After an edit, predict the next one in the same file (Tab jumps / applies, Esc dismisses).
+  next_edit = true,
+  next_edit_delay_ms = 500,
   -- What to send with each request. Providers can override any of this with
   -- their own `context = {...}` table (see ollama below).
   context = {
