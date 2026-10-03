@@ -168,6 +168,19 @@ check("ts definition fetchTodos", text:find("const res = await fetch") ~= nil)
 check("ts method in outline", text:find("async get%(id: number%)") ~= nil)
 check("ts no `if` as method", text:find("if %(id < 0%) {\n```") == nil)
 
+-- Fallback (no language support) -----------------------------------------------
+write("ops/.git/HEAD", "ref")
+write("ops/lib/common.sh", "log() { echo \"[ops] $*\"; }\ndie() { log \"$*\"; exit 1; }")
+write("ops/deploy.sh", "#!/bin/bash\nsource ./lib/common.sh\ncat /etc/hosts\nlog deploying\n")
+write("ops/rollback.sh", "#!/bin/bash\n# undo a deploy\n./deploy.sh --rollback\n")
+write("ops/ci.yml", "include: ops/lib/common.sh\nsteps:\n  - run: ./deploy.sh\n")
+text, summary = context_for("ops/deploy.sh")
+print(summary)
+check("generic upstream via source", text:find("lib/common.sh %(imported") ~= nil)
+check("generic upstream ignores files outside project", text:find("/etc/hosts", 1, true) == nil or text:find("etc/hosts %(") == nil)
+check("generic peer by extension", text:find("rollback.sh") ~= nil)
+check("generic downstream by file name", text:find("ci.yml %(imports") ~= nil)
+
 if os.getenv("SHOW") then text = context_for("app/service.py"); print("\n" .. text) end
 vim.fn.delete(tmp, "rf")
 os.exit(failures == 0 and 0 or 1)

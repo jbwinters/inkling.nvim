@@ -90,6 +90,17 @@ end
 
 -- Every section builder returns { full = string, short = string|nil, label = string }.
 
+-- An outline, or for files with no recognisable declarations (YAML, SQL,
+-- config), the first lines of the file.
+local function skeleton(f)
+  local o = get_outline(f)
+  if o.text ~= "" then
+    return "Outline:\n" .. fence(f.ft, o.text), "outline"
+  end
+  local head = table.concat(f.lines, "\n", 1, math.min(#f.lines, 40))
+  return "Beginning of file:\n" .. fence(f.ft, head), "start"
+end
+
 local function upstream_section(root, path, f, names, opts)
   local header = ("### %s (imported by the current file)"):format(rel(root, path))
   if #f.text <= opts.small_file_chars then
@@ -103,7 +114,7 @@ local function upstream_section(root, path, f, names, opts)
       table.insert(defs, outline.definition(f.lines, d.lnum))
     end
   end
-  local short = header .. "\nOutline:\n" .. fence(f.ft, o.text)
+  local short = header .. "\n" .. skeleton(f)
   if #defs == 0 then
     return { label = rel(root, path) .. " [upstream, outline]", full = short }
   end
@@ -119,11 +130,8 @@ local function peer_section(root, path, f, opts)
   if #f.text <= opts.small_file_chars then
     return { label = rel(root, path) .. " [peer, whole]", full = header .. "\n" .. fence(f.ft, f.text), whole = true }
   end
-  local o = get_outline(f)
-  if o.text == "" then
-    return nil
-  end
-  return { label = rel(root, path) .. " [peer, outline]", full = header .. "\nOutline:\n" .. fence(f.ft, o.text) }
+  local body, kind = skeleton(f)
+  return { label = rel(root, path) .. " [peer, " .. kind .. "]", full = header .. "\n" .. body }
 end
 
 -- Snippets from a file that imports the current one: its import lines plus
@@ -197,19 +205,23 @@ end
 -- uses, similar names (half_normal.py next to normal.py), files this one
 -- mentions, and recently edited files.
 local function list_peers(path, dir, exclude, max, text, open)
-  local fam = FAMILY[vim.fn.fnamemodify(path, ":e")]
-  if not fam then
+  local ext = vim.fn.fnamemodify(path, ":e")
+  if ext == "" then
     return {}
   end
+  -- known language families group related extensions; anything else matches its own extension
+  local fam = FAMILY[ext] or ext
   local mine = name_tokens(path)
   local now = os.time()
   local words = {}
   for w in text:gmatch("[%a_][%w_]*") do
     words[w] = true
   end
+  -- cheap score first (names, recency, tests); only the best candidates get read
   local scored = {}
   for name, type in vim.fs.dir(dir) do
-    if type == "file" and FAMILY[name:match("%.([%w]+)$") or ""] == fam then
+    local e = name:match("%.([%w]+)$") or ""
+    if type == "file" and (FAMILY[e] or e) == fam then
       local p = vim.fs.normalize(dir .. "/" .. name)
       if p ~= path and not exclude[p] then
         local score = 0
@@ -218,18 +230,8 @@ local function list_peers(path, dir, exclude, max, text, open)
             score = score + 3
           end
         end
-        local f = read(p, open)
-        if f then
-          local uses = 0
-          for _, d in ipairs(get_outline(f).decls) do
-            if d.top and words[d.name] and #d.name > 2 then
-              uses = uses + 1
-            end
-          end
-          score = score + 2 * math.min(uses, 4)
-        end
         local stem = vim.fn.fnamemodify(name, ":r")
-        if #stem > 2 and text:find("%f[%w_]" .. vim.pesc(stem) .. "%f[^%w_]") then
+        if #stem > 2 and words[stem] then
           score = score + 2
         end
         -- other files' tests are rarely useful context for non-test code
@@ -242,6 +244,23 @@ local function list_peers(path, dir, exclude, max, text, open)
         end
         table.insert(scored, { p = p, score = score })
       end
+    end
+  end
+  table.sort(scored, function(a, b)
+    return a.score > b.score or (a.score == b.score and a.p < b.p)
+  end)
+  scored = vim.list_slice(scored, 1, 150)
+  -- then: does this file use names the peer declares?
+  for _, c in ipairs(scored) do
+    local f = read(c.p, open)
+    if f then
+      local uses = 0
+      for _, d in ipairs(get_outline(f).decls) do
+        if d.top and words[d.name] and #d.name > 2 then
+          uses = uses + 1
+        end
+      end
+      c.score = c.score + 2 * math.min(uses, 4)
     end
   end
   table.sort(scored, function(a, b)

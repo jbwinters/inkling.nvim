@@ -331,6 +331,8 @@ end
 ---------------------------------------------------------------------------
 
 local function insert(text)
+  -- start a new undo step so `u` takes back just the accepted suggestion
+  vim.o.undolevels = vim.o.undolevels
   local _, row, col = cursor_state()
   local lines = vim.split(text, "\n", { plain = true })
   vim.api.nvim_buf_set_text(0, row, col, row, col, lines)

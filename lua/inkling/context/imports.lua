@@ -348,12 +348,49 @@ resolvers.typescriptreact = resolvers.javascript
 resolvers.cpp = resolvers.c
 
 ---@return table<string, table<string, boolean>> path -> set of imported names
-function M.upstream(path, text, ft, root)
-  local r = resolvers[ft]
-  if not r then
-    return {}
+-- Any other language: quoted or `source`d paths that point at real files,
+-- e.g. `source ./lib.sh`, `@import "base.css"`, `include: ci/common.yml`,
+-- `require_relative "helper"`.
+function resolvers.generic(text, dir, root, path)
+  local result = {}
+  local ext = path and path:match("%.([%w]+)$")
+  local function try(spec)
+    if #spec < 2 or #spec > 200 or spec:find("://", 1, true) or spec:find("[%s%$%*{}<>]") then
+      return
+    end
+    local cands = {}
+    for _, base in ipairs({ dir, root }) do
+      local p = spec:sub(1, 1) == "/" and spec or join(base, spec)
+      table.insert(cands, p)
+      if ext and not spec:match("%.[%w]+$") then
+        table.insert(cands, p .. "." .. ext)
+      end
+    end
+    local found = first_file(cands)
+    -- only files inside the project
+    if found and found:sub(1, #root + 1) == root .. "/" then
+      add(result, found, {})
+    end
   end
-  local ok, result = pcall(r, "\n" .. text, vim.fs.dirname(path), root)
+  for spec in text:gmatch("[\"']([^\"'\n]+)[\"']") do
+    try(spec)
+  end
+  -- unquoted paths with a directory and an extension (YAML, Makefiles, ...)
+  for spec in text:gmatch("[%s:=]([%w_%.%-]*/[%w_%./%-]+%.%a[%w]*)") do
+    try(spec)
+  end
+  for spec in text:gmatch("\n%s*source%s+([^%s;]+)") do
+    try(spec)
+  end
+  for spec in text:gmatch("\n%s*%.%s+([^%s;]+)") do
+    try(spec)
+  end
+  return result
+end
+
+function M.upstream(path, text, ft, root)
+  local r = resolvers[ft] or resolvers.generic
+  local ok, result = pcall(r, "\n" .. text, vim.fs.dirname(path), root, path)
   if not ok then
     return {}
   end
@@ -409,7 +446,8 @@ function M.downstream_query(path, text, ft, root)
   elseif ft == "c" or ft == "cpp" then
     return ([=[#include\s+"[^"]*\b%s\.h"]=]):format(s), globs
   end
-  return "\\b" .. s .. "\\b", globs
+  -- other languages: any file in the project mentioning this file by name
+  return rx_escape(vim.fs.basename(path)), {}
 end
 
 return M
