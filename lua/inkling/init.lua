@@ -691,10 +691,23 @@ function M.setup(opts)
   create_command()
 
   -- Map after all plugins have loaded so we can fall back to their <Tab> etc.
-  if vim.v.vim_did_enter == 1 then
+  local function on_enter()
     set_keymaps()
+    -- Say up front if suggestions can't work (only in interactive sessions).
+    -- Deferred so the startup screen doesn't overwrite the message.
+    vim.defer_fn(function()
+      local p, name = config.provider()
+      if config.options.enabled and p.kind ~= "ollama" and #vim.api.nvim_list_uis() > 0
+        and (config.api_key(p) or "") == "" then
+        vim.notify(("inkling: $%s isn't set, so %s suggestions are off"):format(p.api_key_env or "?", name),
+          vim.log.levels.WARN)
+      end
+    end, 200)
+  end
+  if vim.v.vim_did_enter == 1 then
+    on_enter()
   else
-    vim.api.nvim_create_autocmd("VimEnter", { group = group, once = true, callback = set_keymaps })
+    vim.api.nvim_create_autocmd("VimEnter", { group = group, once = true, callback = on_enter })
   end
 end
 
