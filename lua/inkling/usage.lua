@@ -75,6 +75,11 @@ function M.record(provider, model, u)
   append({ t = os.time(), p = provider, m = model, i = u.input, o = u.output, cr = u.cache_read, cw = u.cache_write, c = cost })
 end
 
+-- Acceptance events. kind: "c" completion | "e" next edit; ev: "s" shown | "a" accepted
+function M.event(kind, ev, provider, model, ft)
+  append({ t = os.time(), ev = ev, k = kind, p = provider, m = model, ft = ft ~= "" and ft or nil })
+end
+
 -- A request cancelled mid-flight (you kept typing). The provider may still bill
 -- the input it read, so log an upper-bound estimate: every prompt character at
 -- ~3.5 chars/token, at the uncached input price.
@@ -101,10 +106,15 @@ local function read_all()
 end
 
 local function bucket()
-  return { n = 0, cost = 0, unpriced = 0, tin = 0, tout = 0, xn = 0, xcost = 0 }
+  return { n = 0, cost = 0, unpriced = 0, tin = 0, tout = 0, xn = 0, xcost = 0, cs = 0, ca = 0, es = 0, ea = 0 }
 end
 
 local function add(b, e)
+  if e.ev then
+    local key = (e.k == "e" and "e" or "c") .. e.ev
+    b[key] = (b[key] or 0) + 1
+    return
+  end
   if e.x then
     b.xn = b.xn + 1
     b.xcost = b.xcost + (e.c or 0)
@@ -138,7 +148,7 @@ function M.today_cost()
       add(b, e)
     end
   end
-  return b.cost, b.n
+  return b.cost, b.n, b.cs, b.ca
 end
 
 local function tokens(n)
@@ -154,6 +164,10 @@ local function money(x)
   return x < 0.01 and x > 0 and "<$0.01" or ("$%.2f"):format(x)
 end
 
+local function pct(a, s)
+  return s > 0 and ("%d%%"):format(math.floor(100 * a / s + 0.5)) or "-"
+end
+
 function M.report()
   local entries = read_all()
   local starts = period_starts()
@@ -164,6 +178,7 @@ function M.report()
     { "all time", 0, bucket() },
   }
   local by_model = {}
+  local by_ft = {}
   local days = {}
   for _, e in ipairs(entries) do
     for _, p in ipairs(periods) do
@@ -174,6 +189,10 @@ function M.report()
     if e.t >= starts.month then
       by_model[e.m] = by_model[e.m] or bucket()
       add(by_model[e.m], e)
+      if e.ev and e.ft then
+        by_ft[e.ft] = by_ft[e.ft] or bucket()
+        add(by_ft[e.ft], e)
+      end
     end
     if e.t >= starts.week then
       local d = os.date("%a %b %d", e.t)
@@ -207,13 +226,34 @@ function M.report()
   table.sort(models, function(a, b)
     return by_model[a].cost > by_model[b].cost
   end)
+  local month = periods[3][3]
+  if month.cs + month.es > 0 then
+    table.insert(lines, "")
+    table.insert(lines, ("this month: %d suggestions shown, %d accepted (%s) · %d next edits shown, %d applied (%s)"):format(
+      month.cs, month.ca, pct(month.ca, month.cs), month.es, month.ea, pct(month.ea, month.es)))
+  end
   if #models > 0 then
     table.insert(lines, "")
     table.insert(lines, "this month by model:")
+    table.insert(lines, ("  %-22s %7s %9s %9s %12s"):format("", "requests", "cost", "accepted", "$/accepted"))
     for _, m in ipairs(models) do
       local b = by_model[m]
+      local accepted = b.ca + b.ea
       local note = b.unpriced > 0 and ("  (%d requests unpriced: add it to `prices`)"):format(b.unpriced) or ""
-      table.insert(lines, ("  %-24s %7d req %10s%s"):format(m, b.n, money(b.cost), note))
+      table.insert(lines, ("  %-22s %7d %9s %9s %12s%s"):format(m, b.n, money(b.cost), pct(b.ca, b.cs),
+        accepted > 0 and ("$%.4f"):format(b.cost / accepted) or "-", note))
+    end
+  end
+  local fts = vim.tbl_keys(by_ft)
+  table.sort(fts, function(a, b)
+    return by_ft[a].cs > by_ft[b].cs
+  end)
+  if #fts > 0 then
+    table.insert(lines, "")
+    table.insert(lines, "this month by language (suggestions accepted):")
+    for _, ft in ipairs(vim.list_slice(fts, 1, 8)) do
+      local b = by_ft[ft]
+      table.insert(lines, ("  %-22s %4d of %4d  %s"):format(ft, b.ca, b.cs, pct(b.ca, b.cs)))
     end
   end
 

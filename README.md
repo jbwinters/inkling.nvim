@@ -43,7 +43,7 @@ request. Suggestions hide while Vim's completion menu is open.
 | `:Inkling use openai/gpt-5.4-mini` | both |
 | `:Inkling use default` | forget the choice, back to your config / automatic |
 | `:Inkling context` | show exactly what the model would see at the cursor |
-| `:Inkling spend` | spend today, last 7 days (by day), this month (by model), all time |
+| `:Inkling spend` | spend and acceptance: today, last 7 days (by day), this month (by model and language), all time |
 
 Set `vim.b.inkling_disabled = true` to turn it off for one buffer.
 
@@ -94,6 +94,12 @@ cache_read = …, cache_write = … } }` (USD per 1M tokens).
 
 Requests cancelled because you kept typing are listed separately as an upper
 bound: providers may or may not bill input they had already read.
+
+It also records which suggestions you take: accepted with Tab / Alt-w / Alt-l,
+or typed out exactly as suggested. `:Inkling spend` shows the acceptance rate and
+**cost per accepted suggestion** for each model (the number to compare models
+by), acceptance by language, and how many next-edit predictions you applied.
+`:Inkling` shows today's acceptance rate.
 
 Rough cost per suggestion with full project context (~10k input tokens):
 Sonnet 5.5 about $0.01–0.02 (less when cached), luna about $0.001.

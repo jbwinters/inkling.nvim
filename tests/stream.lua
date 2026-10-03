@@ -3,6 +3,9 @@
 -- user types over it and accepts parts of it.
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 vim.opt.rtp:prepend(root)
+-- keep test activity out of the real spend/acceptance log
+local test_log = vim.fn.tempname()
+require("inkling.usage").path = function() return test_log end
 local providers = require("inkling.providers")
 local feed_partial, feed_done
 providers.run = function(_, on_partial, on_done)
@@ -49,6 +52,25 @@ check("no longer streaming", gw._current().streaming == false)
 gw.accept()
 check("accept rest", line() == "x = compute(a, b) + 1", line())
 check("suggestion gone", gw._current() == nil)
+
+-- acceptance events
+local function events()
+  local out = {}
+  for _, l in ipairs(vim.fn.readfile(test_log)) do
+    local e = vim.json.decode(l)
+    if e.ev then table.insert(out, e.k .. e.ev) end
+  end
+  return table.concat(out, ",")
+end
+check("shown + accepted logged once", events() == "cs,ca", events())
+
+-- typing a whole suggestion yourself counts as accepted
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "z = " })
+vim.api.nvim_win_set_cursor(0, { 1, 4 })
+gw.request()
+feed_done(nil, "42"); settle()
+type_text("42")
+check("typed-through counts as accepted", events() == "cs,ca,cs,ca", events())
 
 -- divergent typing drops the suggestion
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "y = " })

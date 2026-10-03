@@ -2,6 +2,9 @@
 -- Exercises the full request -> render -> accept path against a real provider.
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 vim.opt.rtp:prepend(root)
+-- keep test activity out of the real spend/acceptance log
+local test_log = vim.fn.tempname()
+require("inkling.usage").path = function() return test_log end
 local gw = require("inkling")
 gw.setup({ provider = _G.arg[1] or "openai", debounce_ms = 10 })
 -- pin the provider under test (a remembered `:Inkling use` choice would override it)

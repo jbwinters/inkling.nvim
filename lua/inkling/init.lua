@@ -294,12 +294,23 @@ local function update(ctx, id, full, done)
   if not starts_with(full, typed) or (#full == #typed and done) then
     return
   end
+  local p, name = config.provider()
   current = {
     id = id, bufnr = ctx.bufnr, row = row, col = col, before = before,
     full = full, offset = #typed, streaming = not done,
+    provider = name, model = p.model, ft = ctx.filetype,
   }
+  usage.event("c", "s", name, p.model, ctx.filetype)
   refresh_text()
   render()
+end
+
+-- Count a suggestion as accepted once (Tab / Alt-w / Alt-l, or typed in full).
+local function mark_accepted(s)
+  if s and not s.accepted then
+    s.accepted = true
+    usage.event("c", "a", s.provider, s.model, s.ft)
+  end
 end
 
 function M.request()
@@ -393,6 +404,7 @@ local function advance()
   current.before, current.col = before, col
   refresh_text()
   if current.text == "" and not current.streaming then
+    mark_accepted(current) -- you typed exactly what it suggested
     return false
   end
   render()
@@ -419,6 +431,7 @@ local function accept_part(part)
     return
   end
   local sugg = current
+  mark_accepted(sugg)
   pcall(vim.api.nvim_buf_clear_namespace, sugg.bufnr, ns, 0, -1)
   insert(part)
   -- keep the same suggestion (it may still be streaming), anchored at the new cursor
@@ -558,9 +571,12 @@ local function status()
     end
     table.insert(parts, ("avg %.1fs over %d requests"):format(total / #recent / 1000, #recent))
   end
-  local today, n = usage.today_cost()
+  local today, n, shown, accepted = usage.today_cost()
   if n > 0 then
     table.insert(parts, ("today %s"):format(today < 0.01 and "<$0.01" or ("$%.2f"):format(today)))
+  end
+  if shown > 0 then
+    table.insert(parts, ("%d%% of %d suggestions accepted"):format(math.floor(100 * accepted / shown + 0.5), shown))
   end
   local msg = table.concat(parts, " · ")
   if last_error then
@@ -712,6 +728,16 @@ function M.setup(opts)
     vim.api.nvim_set_hl(0, "InklingEditHint", { link = "Comment", default = true })
   end
   set_highlights()
+  local function edit_event(ev)
+    local p, name = config.provider()
+    usage.event("e", ev, name, p.model, vim.bo.filetype)
+  end
+  nextedit.on_shown = function()
+    edit_event("s")
+  end
+  nextedit.on_accepted = function()
+    edit_event("a")
+  end
 
   local group = vim.api.nvim_create_augroup("inkling", { clear = true })
   vim.api.nvim_create_autocmd({ "TextChangedI", "CursorMovedI", "InsertLeave" }, {
