@@ -1,0 +1,285 @@
+*inkling.txt*  AI code completion with your choice of model
+
+==============================================================================
+CONTENTS                                                    *inkling-contents*
+
+  1. Introduction ............................... |inkling-intro|
+  2. Setup ...................................... |inkling-setup|
+  3. Completions ................................ |inkling-completions|
+  4. Next edit prediction ....................... |inkling-next-edit|
+  5. Commands ................................... |inkling-commands|
+  6. Choosing a model ........................... |inkling-models|
+  7. Spend and acceptance ....................... |inkling-spend|
+  8. What the model sees ........................ |inkling-context|
+  9. Configuration .............................. |inkling-config|
+ 10. Highlights ................................. |inkling-highlights|
+
+==============================================================================
+1. INTRODUCTION                                                *inkling-intro*
+
+inkling shows AI code completions as you type, like GitHub Copilot, using a
+model you choose: Claude (Anthropic), OpenAI, any OpenAI-compatible API, or a
+local model through Ollama. Suggestions appear as grey "ghost text" for the
+rest of the line or block. After you change something, inkling can also
+predict the related next edit in the same file.
+
+Requirements:
+- Neovim 0.10 or later
+- `curl`
+- an API key for Anthropic or OpenAI, or a running Ollama server
+- optional: `rg` (ripgrep), used to find files that use the current file
+
+==============================================================================
+2. SETUP                                                       *inkling-setup*
+
+Call setup() once, after the plugin is loaded: >lua
+    require('inkling').setup()
+<
+API keys are read from `$ANTHROPIC_API_KEY` and `$OPENAI_API_KEY`. If the key
+for the active provider is missing, inkling warns you at startup. To keep
+keys out of the environment, give a provider an `api_key` string or function: >lua
+    require('inkling').setup({
+      providers = {
+        openai = {
+          api_key = function() return vim.trim(vim.fn.system('pass show openai')) end,
+        },
+      },
+    })
+<
+==============================================================================
+3. COMPLETIONS                                           *inkling-completions*
+
+Start typing in insert mode. A suggestion appears after a short pause
+(|inkling-debounce_ms|).
+
+Insert-mode keys:
+
+  <Tab>     Accept the suggestion. A normal <Tab> when there is none.
+  <M-w>     Accept the next word (Alt-w).
+  <M-l>     Accept the next line (Alt-l).
+  <C-]>     Dismiss.
+  <M-\>     Ask for a suggestion now (Alt-\).
+
+- Suggestions stream in: the first line appears as soon as the model starts
+  writing, and you can type over it or accept part of it while the rest
+  arrives.
+- Typing characters that match the suggestion keeps it on screen without a
+  new request.
+- Suggestions hide while the completion menu is open, so <Tab> works the menu.
+- Accepting a suggestion is its own undo step.
+
+To turn inkling off for one buffer: >lua
+    vim.b.inkling_disabled = true
+<
+==============================================================================
+4. NEXT EDIT PREDICTION                                    *inkling-next-edit*
+
+After you change something (leave insert mode, or make a normal-mode edit
+such as |cw|, |dd| or |:s|), inkling asks the model whether that change
+implies another one in the same file: the next use of a renamed variable, a
+call site of a changed signature, or a sibling branch that should match. If
+it does, the lines are highlighted and the replacement is shown below them.
+
+Normal-mode keys, mapped only while a prediction is showing:
+
+  <Tab>     Jump to the predicted edit; press again to apply it.
+  <Esc>     Dismiss.
+
+Applying a prediction is a single undo step and often leads to the next one.
+Undo and redo don't trigger predictions. Each prediction is one request with
+your recent edits and the current file. Turn it off with
+|inkling-next_edit| = false.
+
+==============================================================================
+5. COMMANDS                                                *inkling-commands*
+
+                                                                    *:Inkling*
+:Inkling                Status: on/off, provider, model, recent response
+                        times, today's spend and acceptance rate.
+
+:Inkling on                                                      *:Inkling-on*
+:Inkling off                                                    *:Inkling-off*
+:Inkling toggle                                              *:Inkling-toggle*
+                        Turn suggestions and predictions on or off.
+
+:Inkling use {name}                                             *:Inkling-use*
+                        Switch provider or model. The choice is remembered
+                        across sessions. {name} can be:
+                          a provider        `:Inkling use anthropic`
+                          a model           `:Inkling use gpt-5.4-mini`
+                          provider/model    `:Inkling use openai/gpt-5.4-mini`
+                          `default`         forget the choice and go back to
+                                            your config (or automatic)
+
+:Inkling context                                            *:Inkling-context*
+                        Open a split showing exactly what the model would see
+                        at the cursor, with a per-file size breakdown.
+
+:Inkling spend                                                *:Inkling-spend*
+                        Spend and acceptance: today, last 7 days (by day),
+                        this month (by model and language), all time.
+
+==============================================================================
+6. CHOOSING A MODEL                                           *inkling-models*
+
+inkling uses the first of these that applies:
+
+1. your last |:Inkling-use| choice
+2. `provider` in setup()
+3. automatic: `gpt-6-luna` if `$OPENAI_API_KEY` is set (cheapest), otherwise
+   `claude-sonnet-5-5` if `$ANTHROPIC_API_KEY` is set (most accurate)
+
+Providers and their default models:
+
+  anthropic   claude-sonnet-5-5   most accurate; ~$0.01-0.02 per suggestion
+  openai      gpt-6-luna          cheapest; ~$0.001 per suggestion
+  ollama      qwen2.5-coder:7b    local fill-in-the-middle; small prompt, no
+                                  project context (not yet tested against a
+                                  live Ollama server)
+
+Any OpenAI-compatible API (OpenRouter, LM Studio, vLLM, ...) can be added as
+an extra provider with `kind = 'openai'` (see |inkling-providers|).
+
+==============================================================================
+7. SPEND AND ACCEPTANCE                                        *inkling-spend*
+
+inkling prices every request from the token usage the provider reports and
+appends it to `stdpath('data')/inkling/usage.jsonl`. |:Inkling| shows today's
+total and |:Inkling-spend| the breakdown.
+
+- Prices for the default models are built in; add others with
+  |inkling-prices|.
+- Requests cancelled because you kept typing are listed separately as an
+  upper bound, because providers may or may not bill input they had already
+  read.
+- A suggestion counts as accepted when you take it with <Tab>, <M-w> or <M-l>,
+  or type it out exactly. |:Inkling-spend| shows the acceptance rate and cost
+  per accepted suggestion for each model, acceptance by language, and how
+  many next-edit predictions you applied.
+
+==============================================================================
+8. WHAT THE MODEL SEES                                       *inkling-context*
+
+Each completion request includes:
+
+1. The whole current file, with the cursor marked. Files over
+   |inkling-current_file_max_chars| are cut to a window around the cursor.
+2. Project context:
+   - Upstream: project files the current file imports. Small files whole;
+     larger ones as an outline plus the definitions of the names it uses.
+   - Peers: same-directory files in the same language, as outlines, ranked by
+     whether the current file uses names they define, name similarity and
+     recent edits. Other files' tests come last.
+   - Downstream: files that import the current file, as snippets around their
+     uses of it (found with `rg`).
+3. Project instructions: `.inkling.md`, `AGENTS.md`, `CLAUDE.md`,
+   `.cursorrules` or `.github/copilot-instructions.md`, from the file's
+   directory up to the repository root, nearest first.
+4. Your recent edits: diffs of what you changed in the last few minutes, in
+   any file.
+
+Imports are resolved for Python, JavaScript/TypeScript, Lua, Elixir, Go, Rust
+and C/C++. Other languages get context from referenced file paths,
+same-extension files, and files that mention them. Project context is rebuilt
+in the background, so it never delays a suggestion. The parts of the prompt
+that don't change are cached by the provider between requests.
+
+==============================================================================
+9. CONFIGURATION                                              *inkling-config*
+
+All options are optional. Defaults are shown.
+
+                                                           *inkling-provider*
+provider = nil ~
+    Provider to use. nil picks automatically (|inkling-models|).
+
+                                                        *inkling-debounce_ms*
+debounce_ms = 250 ~
+    Milliseconds to wait after the last keystroke before requesting.
+
+                                                          *inkling-next_edit*
+next_edit = true ~
+    Predict the next edit after each change (|inkling-next-edit|).
+
+                                                 *inkling-next_edit_delay_ms*
+next_edit_delay_ms = 500 ~
+    Pause after an edit before predicting the next one.
+
+                                                         *inkling-max_tokens*
+max_tokens = 256 ~
+    Maximum length of a suggestion, in tokens.
+
+                                                             *inkling-prices*
+prices = {} ~
+    Extra or overriding prices for spend tracking, in USD per 1M tokens: >lua
+    prices = { ['gpt-5.4-mini'] = { input = 0.25, output = 2, cache_read = 0.025 } }
+<
+                                                            *inkling-context-opts*
+context ~
+    What to send with each request: >lua
+    context = {
+      current_file_max_chars = 60000,
+      recent_edits = { enabled = true, max_chars = 4000 },
+      project = {
+        enabled = true, max_chars = 40000, small_file_chars = 3000,
+        instructions = true, max_instructions_chars = 6000,
+        upstream = true, max_upstream = 10,
+        peers = true, max_peers = 15,
+        downstream = true, max_downstream = 6,
+      },
+    }
+<
+                                             *inkling-current_file_max_chars*
+    `current_file_max_chars`: larger files are cut to a window around the
+    cursor. `small_file_chars`: related files smaller than this are sent
+    whole. A provider can override any of these with its own `context` table.
+
+                                                 *inkling-disabled_filetypes*
+disabled_filetypes ~
+    Filetypes where suggestions never appear: >lua
+    { 'help', 'gitcommit', 'gitrebase', 'TelescopePrompt', 'NvimTree',
+      'nerdtree', 'qf', 'netrw' }
+<
+                                                            *inkling-keymaps*
+keymaps ~
+    Insert-mode keys. Set one to '' to leave it unmapped: >lua
+    keymaps = { accept = '<Tab>', accept_word = '<M-w>', accept_line = '<M-l>',
+                dismiss = '<C-]>', trigger = '<M-\\>' }
+<
+                                                          *inkling-providers*
+providers ~
+    Provider settings, keyed by name. Fields:
+      kind          'openai', 'anthropic' or 'ollama' (the API style)
+      url           endpoint
+      model         model name
+      api_key_env   environment variable holding the key
+      api_key       key string, or a function returning it
+      output        'json' (structured output) or 'tags'
+      extra_body    table merged into each request body
+      context       overrides for |inkling-context-opts|
+      fim           ollama only: use native fill-in-the-middle
+    Example, an extra OpenAI-compatible provider: >lua
+    providers = {
+      openrouter = {
+        kind = 'openai',
+        url = 'https://openrouter.ai/api/v1/chat/completions',
+        model = 'qwen/qwen3-coder',
+        api_key_env = 'OPENROUTER_API_KEY',
+        output = 'json',
+        extra_body = {},
+      },
+    }
+<
+==============================================================================
+10. HIGHLIGHTS                                            *inkling-highlights*
+
+InklingSuggestion       Suggestion text. Default: links to `Comment`.
+InklingEditOld          Lines a next-edit prediction would replace.
+                        Default: links to |hl-DiffDelete|.
+InklingEditNew          The predicted replacement. Default: |hl-DiffAdd|.
+InklingEditHint         The "Tab: next edit" hint. Default: `Comment`.
+
+Example: >vim
+    hi InklingSuggestion guifg=#665c54
+<
+ vim:tw=78:ts=8:ft=help:norl:

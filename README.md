@@ -47,8 +47,9 @@ Plug 'jbwinters/inkling.nvim'
 lua require('inkling').setup()
 ```
 
-From a local checkout, use the path instead, e.g.
-`Plug '~/mydev/development_environment/inkling.nvim'`.
+From a local checkout, use its path instead, e.g. `Plug '~/src/inkling.nvim'`.
+
+Full documentation is also available in Neovim with `:help inkling`.
 
 ### API keys
 
@@ -266,3 +267,7 @@ INKLING_EVAL_DIR=~/code nvim --headless -u NONE -l tests/eval.lua anthropic 40  
 under `INKLING_EVAL_DIR` (at the start, mid-line, or with a gap in the middle),
 asks for completions with full project context, and scores the first suggested
 line against the original.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
