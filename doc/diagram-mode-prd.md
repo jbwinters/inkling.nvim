@@ -164,24 +164,30 @@ superseded, or closed views cannot change the display.
 
 ## Rendering
 
-The default auto renderer uses a graphical Mermaid canvas when Kitty and Mermaid
-CLI are available. Components show nested responsibility boundaries with dependency
+The default auto renderer uses a graphical Mermaid canvas when an image backend
+and Mermaid CLI are available. Components show nested responsibility boundaries with dependency
 arrows; flow shows steps, decision diamonds, branches, and exits. Separate generation
 schemas constrain node kinds, and flat component responses receive a correction.
 The visible diagram retains its own view label while another view is generating.
 
 `m` renders the canvas; `M` exports source. Keyboard pan uses hjkl/arrows, +/-
 zooms, and 0 fits. Left mouse drag pans; the wheel zooms around the pointer.
-A cached raster is transmitted once; camera moves only change terminal placement
-and the visible viewport. No AI or Mermaid process runs for pan/zoom. Coordinates
+A cached raster supplies camera moves: the direct backend changes terminal
+placement; the optional image.nvim adapter crops the viewport with ImageMagick.
+No AI or Mermaid process runs for pan/zoom. Coordinates
 are bounded to the image and terminal grid. Resize, hiding, and cleanup preserve
 Neovim windows and remove only graphics owned by this workspace. Selecting evidence
 remains available through /, Enter, and conversation citations.
 
-Kitty Unicode placeholders anchor the image to Neovim text so it clips correctly
-inside splits and follows terminal redraws. No image.nvim or ImageMagick dependency
-is required. Native text remains available for other terminals. CLI and browser
-paths are configurable. The plugin does not change terminal/tmux settings.
+Kitty and Ghostty use Unicode placeholders to anchor the image to Neovim text
+and clip it inside splits without an image plugin or ImageMagick. Other terminals
+can use a configured image.nvim backend (Sixel, Überzug++, or Kitty), with
+ImageMagick for viewport transforms. The adapter hides graphics under overlapping
+pickers and in hidden tmux panes, cancels superseded transforms, and retains only
+the current viewport. Missing prerequisites and rendering errors fall back to
+native text while retaining source navigation and chat. Backend selection,
+CLI, and browser paths are configurable. The plugin does not change terminal,
+tmux, or image.nvim settings.
 
 ## Limits and lifecycle
 

@@ -140,7 +140,7 @@ draw = function()
     local image_height = math.max(1, vim.api.nvim_win_get_height(s.win) - 6)
     if e then
       local key = vim.fn.sha256(graphlib.mermaid(e.graph, highlights) .. vim.o.background
-        .. tostring(config.options.view.mermaid.scale))
+        .. tostring(config.options.view.mermaid.scale) .. tostring(config.options.view.image_backend))
       if key ~= s.image_key then
         local previous = s.image_entry == e and s.image and s.image.camera
         previous = previous and { zoom = previous.zoom, x = previous.x, y = previous.y }
@@ -207,7 +207,14 @@ draw = function()
     for row = s.canvas_top, #lines - 1 do
       vim.api.nvim_buf_set_extmark(s.buf, ns, row, 0, { end_col = #lines[row + 1], hl_group = hl, priority = 200 })
     end
+  end
+  if graphical then
     vim.api.nvim_win_call(s.win, function() vim.fn.winrestview({ topline = 1, leftcol = 0 }) end)
+    if s.image and s.image.present then
+      vim.schedule(function()
+        if state == s and s.image and s.image.present then s.image:present() end
+      end)
+    end
   end
   draw_chat()
 end
@@ -672,6 +679,8 @@ function M.zoom(factor, x, y)
   local s = state
   if not s or s.renderer ~= "mermaid" or not s.image or not s.image.camera then return end
   M.pin()
+  -- Pinning redraws and may replace the image or fall back to text.
+  if not s.image or not s.image.camera then return end
   local camera = require("inkling.view.canvas")
   if factor == 0 then camera.fit(s.image.camera) else camera.zoom(s.image.camera, factor, x, y) end
   draw()

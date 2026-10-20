@@ -64,23 +64,23 @@ local uv = vim.uv or vim.loop
 local new_timer, system = uv.new_timer, vim.system
 local tmux, pane = vim.env.TMUX, vim.env.TMUX_PANE
 vim.env.TMUX, vim.env.TMUX_PANE = "test", "%70"
-local tick, stopped, resumed = nil, false, 0
+local tick, stopped, resumed, hidden = nil, false, 0, 0
 uv.new_timer = function() return {
   start = function(_, _, _, cb) tick = cb end,
   stop = function() stopped = true end, close = function() end,
 } end
 local status = "1:1:0:0:123:284:77"
 vim.system = function(_, _, cb) cb({ code = 0, stdout = status }); return {} end
-local unwatch = kitty.watch(function() resumed = resumed + 1 end)
+local unwatch = kitty.watch(function() resumed = resumed + 1 end, function() hidden = hidden + 1 end)
 local function poll(value) status = value; tick(); vim.wait(10) end
 poll(status)
 poll("1:1:0:1:123:284:77")
 check("tmux pane focus changes do not repeatedly upload images", resumed == 1)
 poll("1:0:0:0:123:284:77")
 poll("1:1:0:0:123:284:77")
-check("returning to a tmux window restores even its inactive canvas pane", resumed == 2)
+check("returning to a tmux window restores even its inactive canvas pane", resumed == 2 and hidden == 1)
 poll("1:1:1:0:123:284:77")
-check("zoomed-away panes stay hidden", resumed == 2)
+check("zoomed-away panes stay hidden", resumed == 2 and hidden == 2)
 poll("1:1:0:0:123:284:77")
 poll("1:1:0:0:123:280:77")
 check("unzooming and client resizing restore image data", resumed == 4)

@@ -19,6 +19,7 @@ M.defaults = {
     max_chars = 60000, max_files = 8, max_nodes = 24, max_edges = 48,
     max_reads = 2, -- extra evidence rounds for a question
     renderer = "auto", -- prefer Mermaid when supported; "native" or "mermaid" to choose
+    image_backend = "auto", -- direct Kitty/Ghostty, then configured image.nvim; or "kitty" / "image.nvim"
     mermaid = { command = "mmdc", browser = nil, scale = 4 }, -- browser executable, or auto-detect
   },
   -- What to send with each request. Providers can override any of this with

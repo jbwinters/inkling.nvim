@@ -1,4 +1,4 @@
--- Native diagrams and a cached Mermaid raster for the interactive Kitty canvas.
+-- Native diagrams and a cached Mermaid raster for interactive image backends.
 local graphlib = require("inkling.view.graph")
 local M = {}
 
@@ -83,7 +83,20 @@ end
 
 function M.image_available()
   if not M.mermaid_command() then return false, "Mermaid canvas needs Mermaid CLI (mmdc); see :help inkling-view" end
-  return kitty.available()
+  local backend = config.options.view.image_backend or "auto"
+  if backend ~= "auto" and backend ~= "kitty" and backend ~= "image.nvim" then
+    return false, "Unknown view.image_backend: " .. tostring(backend)
+  end
+  local kitty_err
+  if backend ~= "image.nvim" then
+    local ok, err = kitty.available(backend == "kitty")
+    if ok then return true, nil, "kitty" end
+    if backend == "kitty" then return false, err end
+    kitty_err = err
+  end
+  local ok, err = require("inkling.view.image_nvim").available()
+  if ok then return true, nil, "image.nvim" end
+  return false, kitty_err and (kitty_err .. "; " .. err) or err
 end
 
 local function png_size(data)
@@ -97,16 +110,17 @@ end
 
 -- Render once, then pan and zoom the cached raster entirely in the terminal.
 function M.image(graph, highlights, win, buf, height, top, cb)
-  local ok, err = M.image_available()
+  local ok, err, backend = M.image_available()
   if not ok then cb(err); return nil end
   local base = vim.fn.tempname()
   local input, output = base .. ".mmd", base .. ".png"
   vim.fn.writefile(vim.split(graphlib.mermaid(graph, highlights), "\n"), input)
-  local handle = { cancelled = false }
+  local handle = { cancelled = false, backend = backend }
   function handle:clear()
     self.cancelled = true
     if self.unwatch then self.unwatch(); self.unwatch = nil end
     if self.process then pcall(self.process.kill, self.process, 15); self.process = nil end
+    if self.external then self.external:clear(); self.external = nil end
     if self.id then kitty.delete(self.id); self.id = nil end
     self.png = nil
     os.remove(input)
@@ -114,6 +128,7 @@ function M.image(graph, highlights, win, buf, height, top, cb)
   end
   function handle:restore()
     if self.cancelled or not self.png then return end
+    if self.external then self.external:restore(); return end
     kitty.upload(self.png, self.id)
     self.placement = nil
     if self.camera then self:draw(self.camera.columns, self.camera.rows) end
@@ -121,12 +136,16 @@ function M.image(graph, highlights, win, buf, height, top, cb)
   function handle:draw(columns, rows)
     if not self.camera or self.cancelled then return nil end
     local c = camera.layout(self.camera, columns, rows)
+    if self.external then return self.external:draw(c) end
     local size = c.image_columns .. ":" .. c.image_rows
     if self.placement ~= size then
       kitty.place(self.id, c.image_columns, c.image_rows)
       self.placement = size
     end
     return kitty.grid(c)
+  end
+  function handle:present()
+    if self.external then self.external:present() end
   end
   local browser = config.options.view.mermaid.browser
   if not browser then
@@ -159,11 +178,19 @@ function M.image(graph, highlights, win, buf, height, top, cb)
           "Invalid or oversized Mermaid PNG; reduce view.mermaid.scale")
         handle.camera = camera.new(w, h, kitty.cell_size())
         handle.png = data
-        handle.id = kitty.upload(data)
+        if backend == "image.nvim" then
+          handle.external = require("inkling.view.image_nvim").new(output, win, buf, top, function(failure)
+            if handle.cancelled then return end
+            handle:clear()
+            cb(failure)
+          end)
+        else
+          handle.id = kitty.upload(data)
+          handle.unwatch = kitty.watch(function() handle:restore() end)
+        end
         camera.layout(handle.camera, vim.api.nvim_win_get_width(win) - 2, height)
-        handle.unwatch = kitty.watch(function() handle:restore() end)
       end)
-      os.remove(output)
+      if not handle.external then os.remove(output) end
       if not success then handle:clear(); cb(tostring(failure)) else cb(nil) end
     end))
   return handle

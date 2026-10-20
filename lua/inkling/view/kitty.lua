@@ -10,13 +10,19 @@ local placeholder = vim.fn.nr2char(0x10eeee)
 local marks = {}
 for _, code in ipairs(alphabet) do table.insert(marks, vim.fn.nr2char(code)) end
 
-function M.available()
+function M.available(force)
   if #vim.api.nvim_list_uis() == 0 then return false, "Mermaid canvas needs a terminal UI" end
-  if not vim.env.KITTY_WINDOW_ID and not (vim.env.TERM or ""):find("kitty", 1, true) then
-    return false, "Mermaid canvas currently needs Kitty (0.28+); native view remains available"
+  local program = (vim.env.TERM_PROGRAM or ""):lower()
+  local known = program == "kitty" or program == "ghostty"
+    or ((program == "" or program == "tmux" or program == "screen")
+      and (vim.env.KITTY_WINDOW_ID or vim.env.GHOSTTY_RESOURCES_DIR
+      or (vim.env.TERM or ""):find("kitty", 1, true) or (vim.env.TERM or ""):find("ghostty", 1, true)))
+  if not force and not known then
+    return false, "Direct canvas needs Kitty 0.28+ or Ghostty"
   end
   if not vim.o.termguicolors then return false, "Mermaid canvas needs :set termguicolors" end
   if vim.env.TMUX then
+    if (vim.env.TMUX_PANE or "") == "" then return false, "Cannot identify tmux pane (TMUX_PANE is missing)" end
     local result = vim.fn.system({ "tmux", "show-options", "-Apv", "-t", vim.env.TMUX_PANE, "allow-passthrough" })
     if vim.v.shell_error ~= 0 or not vim.trim(result):match("^on") then
       return false, "Mermaid canvas needs tmux allow-passthrough on for this pane"
@@ -27,7 +33,8 @@ end
 
 function M.cell_size()
   if vim.env.TMUX then
-    local result = vim.fn.system({ "tmux", "display-message", "-p", "#{client_cell_width} #{client_cell_height}" })
+    local result = vim.fn.system({ "tmux", "display-message", "-p", "-t", vim.env.TMUX_PANE or "",
+      "#{client_cell_width} #{client_cell_height}" })
     local w, h = result:match("(%d+)%s+(%d+)")
     if tonumber(w) and tonumber(w) > 0 and tonumber(h) > 0 then return tonumber(w), tonumber(h) end
   end
@@ -92,7 +99,7 @@ end
 -- tmux can erase Kitty's image store on a full redraw. An inactive pane does
 -- not receive FocusGained when its window becomes visible, so watch visibility
 -- while a canvas is open. Never send images into a hidden/zoomed-away pane.
-function M.watch(on_visible)
+function M.watch(on_visible, on_hidden)
   if not vim.env.TMUX or not vim.env.TMUX_PANE then return end
   local timer, pending, closed, last = uv.new_timer(), false, false, nil
   timer:start(0, 750, vim.schedule_wrap(function()
@@ -109,6 +116,7 @@ function M.watch(on_visible)
           and (zoomed == "0" or pane == "1")
         local signature = visible and value:gsub("^(%d+):1:0:%d+:", "%1:1:0:0:") or "hidden"
         if visible and signature ~= last then on_visible() end
+        if not visible and signature ~= last and on_hidden then on_hidden() end
         last = signature
       end))
   end))

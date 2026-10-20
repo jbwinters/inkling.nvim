@@ -244,10 +244,17 @@ Large reviews sample evidence within the configured budget; `?` shows coverage
 and `f` includes files not sampled. Diagrams still need human review, and layouts
 can change between Before and After. No GitHub/GitLab connection is needed.
 
-For rendered Mermaid, use **Kitty 0.28+**, `:set termguicolors`, and the
-[Mermaid CLI](https://github.com/mermaid-js/mermaid-cli). Inkling sends images to
-Kitty directly; image.nvim and ImageMagick are not required. Install the CLI on
-PATH, or into Inkling's data directory (find it with `:echo stdpath('data')`):
+Rendered Mermaid uses the [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)
+and an image backend. The default `view.image_backend = 'auto'` chooses:
+
+| Environment | Canvas |
+| --- | --- |
+| Kitty 0.28+ or Ghostty, with `termguicolors` | Direct Kitty graphics protocol; no image plugin or ImageMagick needed |
+| Other terminals with configured [image.nvim](https://github.com/3rd/image.nvim) and ImageMagick | Uses that plugin's backend: Sixel, Überzug++, or Kitty |
+| Missing or failing image support | Native text diagrams, with source navigation and chat |
+
+Install Mermaid CLI on PATH, or into Inkling's data directory (find it with
+`:echo stdpath('data')`):
 
 ```sh
 npm install --prefix ~/.local/share/nvim/inkling/mermaid @mermaid-js/mermaid-cli
@@ -255,7 +262,7 @@ npm install --prefix ~/.local/share/nvim/inkling/mermaid @mermaid-js/mermaid-cli
 
 Mermaid needs a Chromium browser. Inkling uses `view.mermaid.browser` when set,
 otherwise a detected Chrome/Chromium executable, otherwise Puppeteer's default.
-In tmux, enable `allow-passthrough` for the window or pane. Enable Neovim mouse
+For the direct backend in tmux, enable `allow-passthrough` for the window or pane. Enable Neovim mouse
 input with `:set mouse=a`; tmux mouse routing helps when using multiple panes:
 
 ```tmux
@@ -269,6 +276,30 @@ The plugin does not change your tmux or terminal settings. `:Inkling view mermai
 Images render at 4× resolution by default (`view.mermaid.scale`, from 1 to 6).
 Inkling restores cached pixels after terminal focus, resize, and tmux visibility
 changes. Press `m` to resend the image manually without another AI request.
+
+For other terminals, install and configure **image.nvim** for your environment,
+then let Inkling detect it or set `view.image_backend = 'image.nvim'`. For
+example, after installing image.nvim and ImageMagick (`magick` or `convert` on PATH):
+
+```lua
+require('image').setup({
+  backend = 'sixel',          -- requires a Sixel-capable terminal and ImageMagick build
+  processor = 'magick_cli',   -- or use 'ueberzug' above with Überzug++ installed
+  window_overlap_clear_enabled = true,
+  tmux_show_only_in_active_window = true,
+})
+```
+
+Follow image.nvim's backend requirements, including its tmux configuration.
+Inkling uses your existing setup and does not install or configure image.nvim.
+Pan and zoom use the same keys and mouse gestures; this backend converts only
+the visible part of the cached PNG, so it can be slower than the direct canvas.
+Unsupported terminals (including those offering only iTerm2's image protocol)
+use text unless a working image.nvim backend is configured.
+`view.image_backend = 'kitty'` explicitly enables the direct protocol when
+terminal detection is unavailable; it requires Unicode placeholder support.
+`view.renderer = 'native'` always uses text. Press `i` to switch text/canvas;
+`m` reports missing image prerequisites.
 
 Diagram mode is opt-in and works with `enabled = false` (completions off). It
 uses the active provider and logs requests through the existing spend tracker.
@@ -285,11 +316,12 @@ view = {
   max_nodes = 24, max_edges = 48,
   max_reads = 2,               -- extra evidence rounds per question
   renderer = 'auto',          -- prefer Mermaid; or 'native' / 'mermaid'
+  image_backend = 'auto',     -- direct Kitty/Ghostty, then image.nvim; or force either
   mermaid = { command = 'mmdc', browser = nil, scale = 4 },
 },
 ```
 
-Component and flow views are available now. ERDs and local Git branch comparison
+Component, flow, and local Git branch review views are available now. ERDs
 are planned in the [product requirements](doc/diagram-mode-prd.md).
 
 ## Choosing a model
@@ -434,6 +466,7 @@ nvim --headless -u NONE -l tests/view.lua                 # diagrams, focus, evi
 nvim --headless -u NONE -l tests/view_scope.lua           # enclosing scopes, wider evidence, ignore rules and budgets
 nvim --headless -u NONE -l tests/view_provider.lua        # diagram provider overrides (fake HTTP)
 nvim --headless -u NONE -l tests/view_render.lua          # image lifecycle (fake terminal)
+nvim --headless -u NONE -l tests/view_images.lua          # backend selection, camera, cleanup, fallback
 nvim --headless -u NONE -l tests/view_canvas.lua          # camera geometry and graphics protocol
 nvim --headless -u NONE -l tests/live_context.lua openai  # latency with full project context
 INKLING_EVAL_DIR=~/code nvim --headless -u NONE -l tests/eval.lua anthropic 40   # accuracy benchmark

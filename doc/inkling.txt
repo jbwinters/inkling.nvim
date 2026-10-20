@@ -313,7 +313,7 @@ use declaration and indentation heuristics to find the enclosing function;
 components show the current file and local dependencies. The exact source range
 appears at the top. Moving within an unchanged scope does not request a new view.
 
-With Kitty and Mermaid CLI available, the default auto renderer shows a Mermaid
+With an image backend and Mermaid CLI, the default auto renderer shows a Mermaid
 canvas: components have nested boundaries and dependencies; flow has execution
 steps, decision diamonds, branches, and exits. The old diagram remains visible
 while a new one loads. Its header continues to describe the displayed view.
@@ -442,20 +442,27 @@ Configuration defaults: >lua
     max_nodes = 24, max_edges = 48,
     max_reads = 2,              -- extra evidence rounds per question
     renderer = 'auto',         -- or 'native' / 'mermaid'
+    image_backend = 'auto',    -- or 'kitty' / 'image.nvim'
     mermaid = { command = 'mmdc', browser = nil, scale = 4 },
   }
 <
-The Mermaid canvas needs Kitty 0.28+, termguicolors, and Mermaid CLI (mmdc).
-It uses Kitty's graphics protocol directly; image.nvim and ImageMagick are not
-required. CLI lookup checks PATH, then this managed installation location:
+The Mermaid canvas needs Mermaid CLI (mmdc) and an image backend. With
+image_backend = 'auto', Inkling chooses:
+  - Kitty 0.28+ / Ghostty: direct Kitty protocol, with termguicolors enabled.
+    No image.nvim or ImageMagick required.
+  - Other terminals: configured image.nvim, plus ImageMagick's magick or convert
+    executable for viewport cropping. Uses image.nvim's selected backend.
+  - Missing or failing image support: native text diagrams.
+
+CLI lookup checks PATH, then this managed installation location:
   stdpath('data')/inkling/mermaid/node_modules/.bin/mmdc
 For the usual Linux data path, install with:
   npm install --prefix ~/.local/share/nvim/inkling/mermaid @mermaid-js/mermaid-cli
 
 Mermaid needs Chromium. Set view.mermaid.browser to its executable, or Inkling
 uses a detected Chrome/Chromium executable, or Puppeteer's default browser.
-In tmux, enable allow-passthrough on the pane/window; mouse on routes mouse input
-between panes. For example, in tmux.conf:
+For the direct backend in tmux, enable allow-passthrough on the pane/window;
+mouse on routes mouse input between panes. For example, in tmux.conf:
   set -g allow-passthrough on
   set -g mouse on
 Inkling does not change these terminal/tmux settings. Missing prerequisites are
@@ -464,9 +471,32 @@ Images render at 4x resolution by default; view.mermaid.scale accepts 1 to 6.
 Cached pixels are restored after focus, resize, and tmux visibility changes.
 Press m to resend the image manually, preserving zoom without an AI request.
 
+For other terminals, install and configure https://github.com/3rd/image.nvim
+and ImageMagick. A Sixel example (requires a compatible terminal and ImageMagick
+build): >lua
+  require('image').setup({
+    backend = 'sixel',       -- or 'ueberzug' with Überzug++ installed
+    processor = 'magick_cli',
+    window_overlap_clear_enabled = true,
+    tmux_show_only_in_active_window = true,
+  })
+<
+Follow image.nvim's backend and tmux requirements. Inkling uses that existing
+setup without installing or configuring it. The same camera controls work; pan
+and zoom crop the cached PNG and can be slower than the direct backend.
+Sixel, Überzug++, and image.nvim's Kitty backend are supported through this
+adapter. Terminals offering only the iTerm2 image protocol fall back to text
+unless a working image.nvim backend is configured.
+
+Set image_backend = 'image.nvim' to force the adapter. Set it to 'kitty' to force
+the direct protocol when terminal detection is unavailable (requires Unicode
+placeholders). Neither override bypasses missing prerequisites.
+Set renderer = 'native' to always use text; i toggles text/canvas and m explains
+missing image prerequisites. Text mode retains source navigation and chat.
+
 InklingViewSelected highlights selected elements and answer paths. Source
 references are checked against the actual excerpts supplied to the model; that
 check does not establish semantic correctness. Context is bounded and local
-dependency discovery is heuristic. ERDs and Git branch review are future work.
+dependency discovery is heuristic. ERDs are future work.
 
  vim:tw=78:ts=8:ft=help:norl:

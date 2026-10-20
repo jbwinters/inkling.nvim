@@ -405,6 +405,17 @@ check("answer highlights retain the camera position", renders == 2 and s.image.c
 vim.cmd("Inkling view export")
 check("source export has its own command", vim.bo.filetype == "mermaid")
 vim.cmd("close")
+local image_stub = render.image
+render.image = function(_, _, _, _, _, _, cb) cb("backend unavailable"); return nil end
+config.options.view.image_backend = "image.nvim"
+local zoom_ok = pcall(view.zoom, 1)
+check("backend failure during zoom safely falls back to text", zoom_ok and s.renderer == "native"
+  and s.image == nil and s.status:find("backend unavailable", 1, true) ~= nil and #requests == count + 1)
+render.image = image_stub
+config.options.view.image_backend = "auto"
+view.mermaid(); settle()
+check("retry after backend fallback preserves the graph", s.renderer == "mermaid" and s.entry.graph.title ~= nil
+  and #requests == count + 1)
 view.renderer()
 check("switching to text releases terminal graphics", s.renderer == "native" and s.image == nil and cleared >= 2)
 view.close()
