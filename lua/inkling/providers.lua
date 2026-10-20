@@ -384,6 +384,16 @@ end
 ---@return vim.SystemObj|nil
 function M.run(job, on_partial, on_done)
   local p, name = config.provider()
+  if job.provider then
+    name = job.provider
+    p = config.options.providers[name]
+    if not p then
+      on_done("unknown provider: " .. tostring(name))
+      return nil
+    end
+  end
+  p = vim.deepcopy(p)
+  p.model = job.model or p.model
   local kind = kinds[p.kind]
   if not kind then
     on_done(("provider %s has unknown kind %q"):format(name, tostring(p.kind)))
@@ -396,7 +406,7 @@ function M.run(job, on_partial, on_done)
   local headers, body = kind.request(p, job)
   local st = { text = "" }
   local last_partial = nil
-  return http.post_stream(p.url, headers, body, config.options.timeout, function(line)
+  return http.post_stream(p.url, headers, body, job.timeout or config.options.timeout, function(line)
     kind.parse(st, line)
     if on_partial then
       local part = partial_result(job, st.text)
@@ -416,9 +426,9 @@ function M.run(job, on_partial, on_done)
     end
     vim.schedule(function()
       if u then
-        usage.record(name, p.model, u)
+        usage.record(name, p.model, u, job.purpose)
       elseif cancelled and job.prompt_chars then
-        usage.record_cancelled(name, p.model, job.prompt_chars)
+        usage.record_cancelled(name, p.model, job.prompt_chars, job.purpose)
       end
     end)
     if err then

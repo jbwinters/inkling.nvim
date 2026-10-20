@@ -679,6 +679,8 @@ local subcommands = {
   end,
   use = use,
   context = show_context,
+  view = function(_, args) require("inkling.view").command(args) end,
+  ask = function(_, args) require("inkling.view").ask(table.concat(args, " ", 2)) end,
   spend = function()
     vim.notify(table.concat(usage.report(), "\n"))
   end,
@@ -689,16 +691,18 @@ local function create_command()
     local sub = cmd.fargs[1] or "status"
     local fn = subcommands[sub]
     if not fn then
-      return vim.notify("inkling: unknown command " .. sub .. " (try: on, off, toggle, use, context, spend)", vim.log.levels.ERROR)
+      return vim.notify("inkling: unknown command " .. sub .. " (try: on, off, toggle, use, context, spend, view, ask)", vim.log.levels.ERROR)
     end
-    fn(cmd.fargs[2])
+    fn(cmd.fargs[2], cmd.fargs)
   end, {
     nargs = "*",
-    desc = "inkling: status | on | off | toggle | use <provider or model> | context | spend",
+    desc = "inkling: status | on | off | toggle | use | context | spend | view | ask",
     complete = function(_, line)
       local args = vim.split(line, "%s+")
       if #args <= 2 then
-        return { "on", "off", "toggle", "use", "context", "spend", "status" }
+        return { "on", "off", "toggle", "use", "context", "spend", "status", "view", "ask" }
+      elseif args[2] == "view" and #args == 3 then
+        return require("inkling.view").commands
       elseif args[2] == "use" then
         local out = { "default" }
         for name, p in pairs(config.options.providers) do
@@ -721,6 +725,7 @@ function M.setup(opts)
   saved_opts = opts
   config.setup(opts)
   config.load_choice()
+  require("inkling.view").setup()
   local function set_highlights()
     vim.api.nvim_set_hl(0, "InklingSuggestion", { link = "Comment", default = true })
     vim.api.nvim_set_hl(0, "InklingEditOld", { link = "DiffDelete", default = true })

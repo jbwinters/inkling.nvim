@@ -69,10 +69,10 @@ local function append(entry)
   end
 end
 
-function M.record(provider, model, u)
+function M.record(provider, model, u, purpose)
   local cost = u.free and 0 or M.cost(model, u)
   cost = cost and math.floor(cost * 1e8 + 0.5) / 1e8
-  append({ t = os.time(), p = provider, m = model, i = u.input, o = u.output, cr = u.cache_read, cw = u.cache_write, c = cost })
+  append({ t = os.time(), p = provider, m = model, i = u.input, o = u.output, cr = u.cache_read, cw = u.cache_write, c = cost, purpose = purpose })
 end
 
 -- Acceptance events. kind: "c" completion | "e" next edit; ev: "s" shown | "a" accepted
@@ -83,10 +83,10 @@ end
 -- A request cancelled mid-flight (you kept typing). The provider may still bill
 -- the input it read, so log an upper-bound estimate: every prompt character at
 -- ~3.5 chars/token, at the uncached input price.
-function M.record_cancelled(provider, model, chars)
+function M.record_cancelled(provider, model, chars, purpose)
   local est = math.floor(chars / 3.5)
   local p = price(model)
-  append({ t = os.time(), p = provider, m = model, x = 1, i = est, c = p and est * p.input / 1e6 or nil })
+  append({ t = os.time(), p = provider, m = model, x = 1, i = est, c = p and est * p.input / 1e6 or nil, purpose = purpose })
 end
 
 local function read_all()
@@ -106,7 +106,8 @@ local function read_all()
 end
 
 local function bucket()
-  return { n = 0, cost = 0, unpriced = 0, tin = 0, tout = 0, xn = 0, xcost = 0, cs = 0, ca = 0, es = 0, ea = 0 }
+  return { n = 0, cost = 0, unpriced = 0, tin = 0, tout = 0, xn = 0, xcost = 0, cs = 0, ca = 0, es = 0, ea = 0,
+    view_n = 0, view_cost = 0 }
 end
 
 local function add(b, e)
@@ -121,6 +122,10 @@ local function add(b, e)
     return
   end
   b.n = b.n + 1
+  if e.purpose == "diagram" or e.purpose == "question" then
+    b.view_n = b.view_n + 1
+    b.view_cost = b.view_cost + (e.c or 0)
+  end
   b.tin = b.tin + (e.i or 0) + (e.cr or 0) + (e.cw or 0)
   b.tout = b.tout + (e.o or 0)
   if e.c then
@@ -241,7 +246,7 @@ function M.report()
       local accepted = b.ca + b.ea
       local note = b.unpriced > 0 and ("  (%d requests unpriced: add it to `prices`)"):format(b.unpriced) or ""
       table.insert(lines, ("  %-22s %7d %9s %9s %12s%s"):format(m, b.n, money(b.cost), pct(b.ca, b.cs),
-        accepted > 0 and ("$%.4f"):format(b.cost / accepted) or "-", note))
+        accepted > 0 and ("$%.4f"):format(math.max(0, b.cost - b.view_cost) / accepted) or "-", note))
     end
   end
   local fts = vim.tbl_keys(by_ft)
@@ -258,9 +263,14 @@ function M.report()
   end
 
   local all = periods[4][3]
+  if all.view_n > 0 then
+    table.insert(lines, "")
+    table.insert(lines, ("Diagrams and questions: %d requests, %s (all time; included in totals, excluded from $/accepted)."):format(
+      all.view_n, money(all.view_cost)))
+  end
   if all.xn > 0 then
     table.insert(lines, "")
-    table.insert(lines, ("%d requests were cancelled mid-flight because you kept typing (all time)."):format(all.xn))
+    table.insert(lines, ("%d requests were cancelled mid-flight (all time)."):format(all.xn))
     table.insert(lines, ("If the provider billed their input anyway, add up to %s. Not included above."):format(money(all.xcost)))
   end
   if #entries == 0 then

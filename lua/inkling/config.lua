@@ -11,6 +11,16 @@ M.defaults = {
   -- After an edit, predict the next one in the same file (Tab jumps / applies, Esc dismisses).
   next_edit = true,
   next_edit_delay_ms = 500,
+  -- Diagram workspace. Opens explicitly with :Inkling view; independent of enabled.
+  view = {
+    provider = nil, model = nil, -- inherit the active provider/model
+    debounce_ms = 700,
+    max_tokens = 5000, timeout = 60,
+    max_chars = 60000, max_files = 8, max_nodes = 24, max_edges = 48,
+    max_reads = 2, -- extra evidence rounds for a question
+    renderer = "auto", -- prefer Mermaid when supported; "native" or "mermaid" to choose
+    mermaid = { command = "mmdc", browser = nil, scale = 4 }, -- browser executable, or auto-detect
+  },
   -- What to send with each request. Providers can override any of this with
   -- their own `context = {...}` table (see ollama below).
   context = {

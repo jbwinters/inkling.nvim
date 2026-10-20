@@ -13,6 +13,7 @@ CONTENTS                                                    *inkling-contents*
   8. What the model sees ........................ |inkling-context|
   9. Configuration .............................. |inkling-config|
  10. Highlights ................................. |inkling-highlights|
+ 11. Diagram workspace .......................... |inkling-view|
 
 ==============================================================================
 1. INTRODUCTION                                                *inkling-intro*
@@ -118,6 +119,13 @@ your recent edits and the current file. Turn it off with
 :Inkling spend                                                *:Inkling-spend*
                         Spend and acceptance: today, last 7 days (by day),
                         this month (by model and language), all time.
+
+:Inkling view [components|flow]                                *:Inkling-view*
+                        Open a diagram workspace inside Neovim.
+
+:Inkling ask [question]                                         *:Inkling-ask*
+                        Ask about the diagram or selected element. With no
+                        question, open an editable question pane.
 
 ==============================================================================
 6. CHOOSING A MODEL                                           *inkling-models*
@@ -282,4 +290,128 @@ InklingEditHint         The "Tab: next edit" hint. Default: `Comment`.
 Example: >vim
     hi InklingSuggestion guifg=#665c54
 <
+==============================================================================
+11. DIAGRAM WORKSPACE                                           *inkling-view*
+
+Quick start:
+  1. Put the cursor inside a function and run :Inkling view flow.
+  2. Keep browsing code on the left; the diagram on the right follows pauses.
+  3. Ctrl-w l enters and pins it. hjkl pans; +/- zooms; 0 fits. / selects evidence.
+     ? opens a searchable action menu. v describes and selects the diagram view.
+  4. :Inkling ask What happens if this request fails? opens a conversation below.
+     Enter on an answer's citation opens the supporting source.
+  5. :Inkling view follow resumes browsing; :Inkling view close closes the mode.
+
+Open a named source file and use :Inkling view components or :Inkling view flow.
+The diagram opens in a split and follows source focus after a pause. Flow views
+use declaration and indentation heuristics to find the enclosing function;
+components show the current file and local dependencies. The exact source range
+appears at the top. Moving within an unchanged scope does not request a new view.
+
+With Kitty and Mermaid CLI available, the default auto renderer shows a Mermaid
+canvas: components have nested boundaries and dependencies; flow has execution
+steps, decision diamonds, branches, and exits. The old diagram remains visible
+while a new one loads. Its header continues to describe the displayed view.
+
+Drag with the left mouse button to pan. The wheel zooms at the pointer. Zoom is
+relative to fit and bounded by the terminal coordinate grid. Pan and zoom use
+the cached image and make no model requests. Native text is available with i;
+in text view, j/k moves between boxes and Enter opens the element's evidence.
+
+Diagram-local normal-mode keys:
+  ?         Search actions and inspect the diagram's coverage and uncertainty.
+  <Enter>   Open selected source evidence, or find an element first.
+  /         Find a node or relationship with source previews.
+  <Esc>     Clear the selected element.
+  a         Ask a question about the diagram or selected element.
+  e         Expand the selected element using its first source reference.
+  v         Choose components / flow with descriptions.
+  g         Refine the view, e.g. "show only failure paths".
+  p         Pin the scope / resume following source focus.
+  r         Refresh against current source.
+  b         Return to the previous view and its conversation.
+  m         Render Mermaid in the canvas.
+  M         Export Mermaid source to an editable scratch buffer (:write to save).
+  i         Switch native text / Mermaid canvas.
+  hjkl      Pan the canvas (arrow keys also work).
+  + / -     Zoom in / out (= also zooms in).
+  0         Fit the whole diagram.
+  Mouse     Left-drag pans; wheel zooms at the pointer (:set mouse=a).
+  z         Maximize the diagram / restore window sizes.
+  q         Close the diagram and conversation windows.
+
+Entering the diagram, asking a question, expanding, or opening source pins the
+subject. Source navigation therefore does not replace the diagram. Use p or
+:Inkling view follow to resume. Changes mark snapshots stale. Refresh before
+asking about changed source or jumping to exact source lines.
+
+With Telescope installed, the element picker searches names, relationships and
+source paths. Type to filter, Ctrl-n/Ctrl-p moves, Enter selects, Esc cancels.
+Ctrl-O opens supporting code in the existing code pane; Ctrl-A asks about the
+highlighted element. The preview shows the exact source snapshot used by the
+diagram. Narrow terminals use a stacked picker layout. Without Telescope,
+selection falls back to vim.ui.select; no extra dependency is required.
+
+Pressing a opens a small editable split. Enter adds a line; Ctrl-S sends the
+question. Esc enters normal mode, then q closes and saves the draft for this
+view. Refine (g) uses the same editor. ? also offers "Ask about whole diagram"
+when an element is selected. Closing a draft makes no provider request.
+
+Sent questions open a conversation below the diagram. The answer can highlight nodes
+and relationships and cite source lines. Enter on a citation opens that source;
+a asks another question; q closes only the conversation. Additional project files
+can be read or searched within the evidence budget. Conversations do not edit
+source or execute tests. Model inference and unresolved coverage remain visible.
+
+Equivalent commands:
+  :Inkling view pin           :Inkling view follow
+  :Inkling view refresh       :Inkling view back
+  :Inkling view source        :Inkling view expand
+  :Inkling view ask [text]    :Inkling view refine [text]
+  :Inkling view mermaid       :Inkling view export
+  :Inkling view fit           :Inkling view zoom-in
+  :Inkling view zoom-out      :Inkling view focus
+  :Inkling view close
+  :Inkling view actions       :Inkling view select
+
+The workspace operates independently of completion's enabled option. Opening it
+starts generation; closing it cancels pending work. Source text and conversations
+stay in memory; requests use the existing spend tracker.
+
+Configuration defaults: >lua
+  view = {
+    provider = nil, model = nil, -- inherit the active provider/model
+    debounce_ms = 700,
+    max_tokens = 5000, timeout = 60,
+    max_chars = 60000, max_files = 8,
+    max_nodes = 24, max_edges = 48,
+    max_reads = 2,              -- extra evidence rounds per question
+    renderer = 'auto',         -- or 'native' / 'mermaid'
+    mermaid = { command = 'mmdc', browser = nil, scale = 4 },
+  }
+<
+The Mermaid canvas needs Kitty 0.28+, termguicolors, and Mermaid CLI (mmdc).
+It uses Kitty's graphics protocol directly; image.nvim and ImageMagick are not
+required. CLI lookup checks PATH, then this managed installation location:
+  stdpath('data')/inkling/mermaid/node_modules/.bin/mmdc
+For the usual Linux data path, install with:
+  npm install --prefix ~/.local/share/nvim/inkling/mermaid @mermaid-js/mermaid-cli
+
+Mermaid needs Chromium. Set view.mermaid.browser to its executable, or Inkling
+uses a detected Chrome/Chromium executable, or Puppeteer's default browser.
+In tmux, enable allow-passthrough on the pane/window; mouse on routes mouse input
+between panes. For example, in tmux.conf:
+  set -g allow-passthrough on
+  set -g mouse on
+Inkling does not change these terminal/tmux settings. Missing prerequisites are
+explained when m is pressed; auto mode uses native text until they are available.
+Images render at 4x resolution by default; view.mermaid.scale accepts 1 to 6.
+Cached pixels are restored after focus, resize, and tmux visibility changes.
+Press m to resend the image manually, preserving zoom without an AI request.
+
+InklingViewSelected highlights selected elements and answer paths. Source
+references are checked against the actual excerpts supplied to the model; that
+check does not establish semantic correctness. Context is bounded and local
+dependency discovery is heuristic. ERDs and Git branch review are future work.
+
  vim:tw=78:ts=8:ft=help:norl:

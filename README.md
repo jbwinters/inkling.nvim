@@ -20,6 +20,8 @@ rename a variable, and it offers to update the next place that uses it.
   apply it with Tab again
 - **Spend and acceptance tracking**: cost per day and per model, and how many
   suggestions you actually used
+- **Diagram workspace**: component and flow diagrams that follow your focus in
+  Neovim, with questions, source evidence, and Mermaid export
 - **Small interface**: one key to accept, one command (`:Inkling`), no
   subscription; you pay your provider per token
 
@@ -120,6 +122,132 @@ Each prediction is one request with your recent edits and the current file
 | `:Inkling spend` | spend and acceptance: today, last 7 days (by day), this month (by model and language), all time |
 
 To turn inkling off for one buffer, set `vim.b.inkling_disabled = true`.
+
+## Read code through diagrams
+
+Start with this loop:
+
+1. Put your cursor inside a function and run `:Inkling view flow`. Code stays on
+   the left; its diagram opens on the right. Allow time for the model to respond.
+2. Keep browsing code. After you pause in another function, the diagram follows.
+3. Press `Ctrl-w l` to enter the diagram. This **pins** its subject. Move with
+   `hjkl` or arrow keys to pan; `+` / `-` to zoom; `0` fits the diagram.
+   Use `/` to find an element and preview its evidence; `Enter` selects it.
+   Press `?` whenever you want to search the available actions.
+4. Ask from any window with `:Inkling ask What happens if this request fails?`,
+   or press `a` in the diagram, write a question, and send with `Ctrl-S`.
+   The answer appears below it. Press `Enter` on an
+   answer's source citation to inspect the evidence.
+5. Run `:Inkling view follow` to resume browsing, or `:Inkling view close` to
+   close the workspace.
+
+Use `:Inkling view components` for nested boxes covering the file and its local
+dependencies. Flow view follows the enclosing function when it can identify one.
+The scope and whether it is following or pinned appear at the top of the diagram.
+Press `v` to choose a view with a description of what each one shows.
+
+If [Telescope](https://github.com/nvim-telescope/telescope.nvim) is installed,
+Inkling uses it for fuzzy element search, source previews, and the action menu.
+Type to filter, use `Ctrl-n` / `Ctrl-p` to move, and `Esc` to cancel. In the element
+picker, `Ctrl-O` opens evidence in your code pane and `Ctrl-A` asks about that
+element. Previews show the source snapshot used to generate the diagram.
+Without Telescope, selection uses Neovim's `vim.ui.select`.
+
+With Mermaid CLI and Kitty configured, diagrams render as a graphical canvas in
+Neovim. **Components** use nested responsibility boundaries and dependency arrows;
+**flow** uses execution steps, decision diamonds, branches, and exits. Changing
+views generates a new diagram; the old one remains labeled correctly while it loads.
+
+Drag with the left mouse button to pan, and use the wheel to zoom at the pointer.
+Keyboard controls are `hjkl` or arrows to pan, `+` / `-` to zoom, and `0` to fit.
+Zoom is relative to fit; its upper limit depends on the terminal grid size. Pan and
+zoom reuse the rendered image and make no AI requests.
+
+The native text view remains available with `i`, and is the fallback for terminals
+without graphics support. In that view, `j` / `k` navigate boxes and source evidence.
+
+| Diagram key | Action |
+|---|---|
+| `?` | search actions and inspect diagram coverage |
+| `Enter` | open selected source evidence, or find an element first |
+| `/` | find nodes or relationships with source previews |
+| `Esc` | clear the selected element |
+| `a` | ask about the diagram or selected element |
+| `e` | expand the selected element's implementation |
+| `v` | choose components or flow with descriptions |
+| `g` | refine the view, e.g. “show only failure paths” |
+| `p` | pin / resume following source focus |
+| `r` / `b` | refresh / return to the previous view |
+| `m` | render Mermaid in the diagram canvas |
+| `M` | export Mermaid source to an editable scratch buffer |
+| `i` | switch between native text and Mermaid canvas |
+| `hjkl` / arrows | pan the canvas |
+| `+` / `-` / `0` | zoom in / out / fit |
+| mouse drag / wheel | pan / zoom at the pointer |
+| `z` / `q` | maximize or restore the diagram / close the workspace |
+
+Ask with `a` or `:Inkling ask Can a cancelled request still update this buffer?`.
+The question editor is a small split: `Enter` adds a line, `Ctrl-S` sends, and
+`Esc` then `q` closes it while keeping the draft for that view. The action menu
+also offers “Ask about whole diagram” when an element is selected.
+The conversation opens below the diagram. Answers can highlight relevant paths
+and cite source lines; press Enter on a citation to inspect it. Questions can
+read or search additional project files within configured limits. No source code
+is edited and no tests are run by the conversation.
+
+Questions and source navigation pin the scope. `:Inkling view follow` resumes
+browsing. Source edits mark the current view stale; refresh before investigating
+the new revision. Previous views and conversations remain available with `b`.
+References are checked against supplied source ranges; semantic correctness still
+needs review. Missing evidence and coverage limitations appear below the diagram.
+
+For rendered Mermaid, use **Kitty 0.28+**, `:set termguicolors`, and the
+[Mermaid CLI](https://github.com/mermaid-js/mermaid-cli). Inkling sends images to
+Kitty directly; image.nvim and ImageMagick are not required. Install the CLI on
+PATH, or into Inkling's data directory (find it with `:echo stdpath('data')`):
+
+```sh
+npm install --prefix ~/.local/share/nvim/inkling/mermaid @mermaid-js/mermaid-cli
+```
+
+Mermaid needs a Chromium browser. Inkling uses `view.mermaid.browser` when set,
+otherwise a detected Chrome/Chromium executable, otherwise Puppeteer's default.
+In tmux, enable `allow-passthrough` for the window or pane. Enable Neovim mouse
+input with `:set mouse=a`; tmux mouse routing helps when using multiple panes:
+
+```tmux
+set -g allow-passthrough on
+set -g mouse on
+```
+
+The plugin does not change your tmux or terminal settings. `:Inkling view mermaid`
+(or `m`) opens the canvas; `:Inkling view export` (or `M`) opens Mermaid source.
+`:Inkling view fit`, `zoom-in`, and `zoom-out` also control the camera.
+Images render at 4× resolution by default (`view.mermaid.scale`, from 1 to 6).
+Inkling restores cached pixels after terminal focus, resize, and tmux visibility
+changes. Press `m` to resend the image manually without another AI request.
+
+Diagram mode is opt-in and works with `enabled = false` (completions off). It
+uses the active provider and logs requests through the existing spend tracker.
+The provider must support structured JSON output. Diagram and question costs are
+included in spend totals and excluded from cost per accepted suggestion.
+Optional settings:
+
+```lua
+view = {
+  provider = nil, model = nil, -- inherit, or choose independently of completions
+  debounce_ms = 700,
+  max_tokens = 5000, timeout = 60,
+  max_chars = 60000, max_files = 8,
+  max_nodes = 24, max_edges = 48,
+  max_reads = 2,               -- extra evidence rounds per question
+  renderer = 'auto',          -- prefer Mermaid; or 'native' / 'mermaid'
+  mermaid = { command = 'mmdc', browser = nil, scale = 4 },
+},
+```
+
+Component and flow views are available now. ERDs and local Git branch comparison
+are planned in the [product requirements](doc/diagram-mode-prd.md).
 
 ## Choosing a model
 
@@ -259,6 +387,10 @@ nvim --headless -u NONE -l tests/context.lua              # outlines + import re
 nvim --headless -u NONE -l tests/edits.lua                # recent-edit tracking
 nvim --headless -u NONE -l tests/stream.lua               # streaming display (fake provider)
 nvim --headless -u NONE -l tests/nextedit.lua             # next-edit prediction (fake provider)
+nvim --headless -u NONE -l tests/view.lua                 # diagrams, focus, evidence, conversation (fake provider)
+nvim --headless -u NONE -l tests/view_provider.lua        # diagram provider overrides (fake HTTP)
+nvim --headless -u NONE -l tests/view_render.lua          # image lifecycle (fake terminal)
+nvim --headless -u NONE -l tests/view_canvas.lua          # camera geometry and graphics protocol
 nvim --headless -u NONE -l tests/live_context.lua openai  # latency with full project context
 INKLING_EVAL_DIR=~/code nvim --headless -u NONE -l tests/eval.lua anthropic 40   # accuracy benchmark
 ```
