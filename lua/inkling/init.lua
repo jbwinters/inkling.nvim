@@ -680,6 +680,7 @@ local subcommands = {
   use = use,
   context = show_context,
   view = function(_, args) require("inkling.view").command(args) end,
+  review = function(_, args) require("inkling.view").review(args[2], args[3]) end,
   ask = function(_, args) require("inkling.view").ask(table.concat(args, " ", 2)) end,
   spend = function()
     vim.notify(table.concat(usage.report(), "\n"))
@@ -691,18 +692,20 @@ local function create_command()
     local sub = cmd.fargs[1] or "status"
     local fn = subcommands[sub]
     if not fn then
-      return vim.notify("inkling: unknown command " .. sub .. " (try: on, off, toggle, use, context, spend, view, ask)", vim.log.levels.ERROR)
+      return vim.notify("inkling: unknown command " .. sub .. " (try: on, off, toggle, use, context, spend, view, review, ask)", vim.log.levels.ERROR)
     end
     fn(cmd.fargs[2], cmd.fargs)
   end, {
     nargs = "*",
-    desc = "inkling: status | on | off | toggle | use | context | spend | view | ask",
+    desc = "inkling: status | on | off | toggle | use | context | spend | view | review | ask",
     complete = function(_, line)
       local args = vim.split(line, "%s+")
       if #args <= 2 then
-        return { "on", "off", "toggle", "use", "context", "spend", "status", "view", "ask" }
+        return { "on", "off", "toggle", "use", "context", "spend", "status", "view", "review", "ask" }
       elseif args[2] == "view" and #args == 3 then
         return require("inkling.view").commands
+      elseif args[2] == "review" then
+        return require("inkling.view.git").branches(vim.fn.getcwd())
       elseif args[2] == "use" then
         local out = { "default" }
         for name, p in pairs(config.options.providers) do

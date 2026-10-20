@@ -61,9 +61,9 @@ function M.evidence(entry, element)
   if #element.sources == 0 then table.insert(lines, "No checked source reference for this element.") end
   for _, ref in ipairs(element.sources) do
     table.insert(lines, "")
-    table.insert(lines, ("%s:%d-%d"):format(ref.path, ref.start_line, ref.end_line))
+    table.insert(lines, require("inkling.view.source").ref_label(ref))
     table.insert(lines, "```")
-    local file = entry.context.files[ref.path]
+    local file = require("inkling.view.source").file(entry.context, ref)
     for row = ref.start_line, math.min(ref.end_line, ref.start_line + 79) do
       table.insert(lines, file and file.lines[row] or (row .. "| (not inspected)"))
     end

@@ -123,6 +123,11 @@ your recent edits and the current file. Turn it off with
 :Inkling view [components|flow]                                *:Inkling-view*
                         Open a diagram workspace inside Neovim.
 
+:Inkling review [base] [head]                                 *:Inkling-review*
+                        Review committed changes from merge-base(base, head)
+                        to head (HEAD by default). With no base, open a picker.
+                        No checkout, fetch, or hosting integration.
+
 :Inkling ask [question]                                         *:Inkling-ask*
                         Ask about the diagram or selected element. With no
                         question, open an editable question pane.
@@ -324,8 +329,10 @@ Diagram-local normal-mode keys:
   /         Find a node or relationship with source previews.
   <Esc>     Clear the selected element.
   a         Ask a question about the diagram or selected element.
-  e         Expand the selected element using its first source reference.
+  e         Step into an element with a prompt; Ctrl-S sends.
   u         Step out to the enclosing class, file, folder, or project.
+  c         Branch review: choose Changes / Before / After.
+  f         Branch review: choose a changed file.
   v         Choose components / flow with descriptions.
   g         Refine the view, e.g. "show only failure paths".
   p         Pin the scope / resume following source focus.
@@ -346,6 +353,10 @@ Recognized classes use declaration/indentation heuristics; standalone functions
 step directly to their file. Further steps follow containing folders up to the
 project boundary. The header names the boundary, and ? previews the next step.
 b returns with the prior conversation, or cancels widening still in progress.
+e chooses an element if needed, then asks what to inspect. For example:
+"Trace retries into the provider." Ctrl-S sends; cancelling saves the draft.
+The model can request bounded additional source before drawing. Step-in starts
+its own conversation; b restores the previous diagram and conversation.
 Refresh, refinement, and view changes keep the widened scope; p follows code again.
 
 Folder/project perspectives require ripgrep (rg). They sample sibling areas and
@@ -380,7 +391,8 @@ source or execute tests. Model inference and unresolved coverage remain visible.
 Equivalent commands:
   :Inkling view pin           :Inkling view follow
   :Inkling view refresh       :Inkling view back
-  :Inkling view source        :Inkling view expand
+  :Inkling view source        :Inkling view in [prompt]
+  :Inkling view expand [prompt]
   :Inkling view out
   :Inkling view ask [text]    :Inkling view refine [text]
   :Inkling view mermaid       :Inkling view export
@@ -388,6 +400,34 @@ Equivalent commands:
   :Inkling view zoom-out      :Inkling view focus
   :Inkling view close
   :Inkling view actions       :Inkling view select
+  :Inkling view compare       :Inkling view files
+  :Inkling view changes       :Inkling view before       :Inkling view after
+
+LOCAL BRANCH REVIEW                                       *inkling-view-review*
+
+  :Inkling review main
+  :Inkling review main feature/my-change
+
+Compare the common ancestor of base/head to head, pinning exact commit IDs.
+The overview shows changed components with surrounding source. f lists all
+changed files, including files outside the sampled overview. c chooses Changes,
+Before or After. e steps in, u widens, b returns, a asks, and v chooses a lens.
+
+Change labels distinguish Added, Removed, Changed, Context and Unknown. These
+are model interpretations: paired evidence is required for changed/context
+classifications, but semantic correctness still needs human review. Layouts
+may differ between separately generated views.
+
+Every citation names before/after. Source jumps open read-only Git snapshots,
+including deleted code. Additional reads/searches stay in the pinned revisions.
+Neither unsaved edits nor changes to your working tree affect the review.
+No branch is checked out, and no GitHub/GitLab connection or fetch is needed.
+
+r regenerates the same pinned commits. Start :Inkling review again to include
+new commits. Large reviews sample changed-line windows plus surrounding source;
+the header and ? disclose coverage. Binary/oversized files may have no diagram
+evidence. f still lists them. Budgets count each revision excerpt separately.
+Views/conversations are cached in memory and disappear when Neovim exits.
 
 The workspace operates independently of completion's enabled option. Opening it
 starts generation; closing it cancels pending work. Source text and conversations

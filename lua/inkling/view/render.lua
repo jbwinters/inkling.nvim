@@ -34,7 +34,7 @@ function M.native(graph, columns, highlights)
       for _, line in ipairs(wrap(text, inner)) do table.insert(content, { text = line, id = id, hl = hl }) end
     end
     local hl = highlights and highlights[n.id] and "InklingViewSelected" or "Title"
-    add((n.kind == "decision" and "◇ " or "") .. n.label, n.id, hl)
+    add((n.kind == "decision" and "◇ " or "") .. graphlib.label(n, graph), n.id, hl)
     if n.detail ~= "" then add(n.detail, n.id, "Comment") end
     if #n.sources == 0 then add("[source unverified]", n.id, "DiagnosticWarn") end
     for _, child in ipairs(graph.nodes) do
@@ -46,7 +46,7 @@ function M.native(graph, columns, highlights)
     for _, e in ipairs(graph.edges) do
       if e.from == n.id then
         local eh = highlights and highlights[e.id] and "InklingViewSelected" or "Special"
-        add((e.inferred and "┄▶ " or "─▶ ") .. graph.by_id[e.to].label .. " · " .. e.label
+        add((e.inferred and "┄▶ " or "─▶ ") .. graph.by_id[e.to].label .. " · " .. graphlib.label(e, graph)
           .. (e.inferred and " [inferred]" or ""), e.id, eh)
       end
     end

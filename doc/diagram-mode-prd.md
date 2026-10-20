@@ -4,8 +4,9 @@ Status: focus following and conversation are implemented. Mermaid now renders
 inside Neovim with mouse and keyboard pan/zoom. Component boundaries and flow
 steps use separate generation schemas. Step out widens the perspective through
 recognized classes, files, containing folders, and the project boundary.
-Git branch review, ERDs, and diagram-detail controls remain
-follow-on work; no GitHub or GitLab integration is required.
+Prompted step-in and local Git branch review are implemented. ERDs and
+diagram-detail presets remain follow-on work. No GitHub or GitLab integration
+is required.
 
 ## Problem and outcome
 
@@ -75,8 +76,14 @@ are source boundaries, not proof of a domain component or subsystem.
 Each outward step opens a component overview and pins it. The header names the
 actual boundary; the action menu previews the next boundary. The previous diagram
 stays visible until the new one is ready. `b` restores it with its conversation,
-or cancels an outward step still generating. `e` remains the action for expanding
-a selected element's implementation. Refresh, refinement, and changing diagram
+or cancels an outward step still generating. `e` steps into a selected element:
+choose an element if necessary, then describe what to inspect in an editable
+prompt. Examples: "Trace retries into the provider" or "Show validation and failure
+paths." Ctrl-S sends; cancellation retains the draft without generating. The
+diagram can request bounded source reads or literal searches before drawing.
+All selected evidence participates, rather than silently using only its first
+reference. A new subject starts its own conversation; `b` restores the old one.
+Refresh, refinement, and changing diagram
 type preserve an explicitly widened scope; following code resumes cursor scope.
 
 Folder/project views use bounded, ignore-aware file discovery with ripgrep.
@@ -99,6 +106,44 @@ The next detail-control iteration should keep the chosen perspective fixed:
 
 These are planned product concepts, not controls shipped by this change. Pixel
 zoom continues to change only canvas magnification; it never requests more code.
+
+## Local branch review
+
+`:Inkling review <base> [head]` reviews committed changes from the merge base of
+base/head to head (HEAD by default). With no arguments, choose a baseline from
+local and locally available remote branches. No fetch, checkout, hosting API,
+comment publication, or working-tree mutation is performed.
+
+Resolve and pin exact commits when the session starts. Display short commit IDs
+and the named comparison. The initial component diagram describes changed
+responsibilities, relationships, and surrounding behavior. `f` lists all changed
+files, including files omitted from the sampled overview; choosing one narrows
+the review. `u` widens through file/folder/project boundaries. `e`, `a`, `v`, `g`,
+and `b` reuse the browsing workspace's step-in, chat, lens, refinement, and history.
+
+`c` chooses Changes / Before / After without changing the review's commits or
+scope. Changes uses labels and color to distinguish added, removed, modified,
+unchanged-context, and unknown elements. These are model interpretations, not a
+semantic proof. Modified/unchanged classifications require references from both
+revisions or are downgraded to unknown. Before and After show only their own
+revision's behavior; chat can still use both. Changing comparison retains the
+conversation and caches each view. Stable descriptive IDs are requested, but
+identical layouts across separately generated diagrams are not guaranteed.
+
+Read source directly from Git objects. Every citation includes before/after,
+path, and line range. Source jumps open read-only snapshot buffers, including
+deleted files and pre-rename paths. Follow-up reads/searches inspect the pinned
+commits only. Unsaved buffers, disk edits, and later branch movement cannot
+change an existing review. `r` regenerates the same commits; start another
+`:Inkling review` to capture new commits. Working-tree review is a future,
+explicit mode.
+
+Use bounded changed-line windows plus surrounding source; reserve evidence
+capacity for dependency investigations. Budgets count each revision excerpt
+separately. Always disclose partial coverage. Large/binary files may be omitted;
+empty comparisons, invalid refs, absent/multiple merge bases, oversized change
+lists, and scopes without readable text return an explanation. The file picker
+still exposes omitted files; it does not imply they were reviewed.
 
 ## Evidence and revisions
 
@@ -168,9 +213,8 @@ in memory; Mermaid export opens an editable scratch buffer for an explicit save.
 
 - ERDs from explicit schemas and ORM declarations; unknown cardinality stays
   unknown. Sequence and state views can follow demonstrated need.
-- Git branch review: select a baseline and branch, state whether the baseline is
-  the merge base or tip, include surrounding unchanged behavior, retain removed
-  paths, and compare before/after. Treat working-tree edits separately.
+- Explicit working-tree review, branch-tip comparisons, and hosted MR/PR context
+  can build on the pinned local comparison.
 - Pin questions or conditions to a scope and explicitly recheck them; optional
   automatic rechecks after this workflow is proven useful.
 - Persistent bookmarks and conversations, improved semantic layout stability,
@@ -182,6 +226,19 @@ Use deterministic headless tests for focus, evidence, rendering, source changes,
 conversation reads, cancellation, history, and lifecycle. Test the actual UI in
 tmux pane `fm:5.1`, preserving its contents. Live provider validation is distinct
 from deterministic tests, and image rendering depends on installed prerequisites.
+
+Prompted step-in and branch-review validation:
+
+- 272 checks passed across ten headless suites, including real temporary Git
+  histories, renamed/deleted files, merge-base selection, local-edit isolation,
+  revision citations/search, schema requirements, cache reuse, and cancellation.
+- Eleven live UI checks passed in `fm:5.1` with fixture provider responses:
+  Telescope file/comparison selection, prompt drafts/submission, read-only
+  revision navigation, conversation citations, actions, and theme preservation.
+- Actual Mermaid rasterization succeeded and its output was visually inspected.
+  The original diagram, source buffer, and history were restored.
+- Help tags generated and whitespace checks passed. New review/step-in model
+  quality has not been validated against a live external provider in this pass.
 
 Recorded validation (2026-10-19):
 

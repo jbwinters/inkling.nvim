@@ -149,7 +149,9 @@ Press `v` to choose a view with a description of what each one shows.
 Press **`u` to step out** to a wider perspective: enclosing class when recognized,
 then file, containing folders, and project. Each step opens a component overview
 and stays pinned. **`b` returns** to the previous diagram and conversation; it
-also cancels a wider view still generating. `e` expands a selected element.
+also cancels a new view still generating. **`e` steps in**: choose an element,
+then describe what to explore, such as “trace retries into the provider.”
+Send with `Ctrl-S`; Inkling can inspect additional source before drawing.
 Refresh and view changes preserve the wider boundary; `p` resumes following code.
 
 Folder/project perspectives need `rg` and sample source within the existing
@@ -184,8 +186,10 @@ without graphics support. In that view, `j` / `k` navigate boxes and source evid
 | `/` | find nodes or relationships with source previews |
 | `Esc` | clear the selected element |
 | `a` | ask about the diagram or selected element |
-| `e` | expand the selected element's implementation |
+| `e` | step into an element with a prompt; Ctrl-S sends |
 | `u` | step out to the enclosing class, file, folder, or project |
+| `c` | in branch review: choose Changes / Before / After |
+| `f` | in branch review: choose a changed file |
 | `v` | choose components or flow with descriptions |
 | `g` | refine the view, e.g. “show only failure paths” |
 | `p` | pin / resume following source focus |
@@ -212,6 +216,33 @@ browsing. Source edits mark the current view stale; refresh before investigating
 the new revision. Previous views and conversations remain available with `b`.
 References are checked against supplied source ranges; semantic correctness still
 needs review. Missing evidence and coverage limitations appear below the diagram.
+
+### Review a local branch
+
+```vim
+:Inkling review main
+:Inkling review main feature/my-change
+```
+
+The first reviews your current branch; the second reviews the named branch.
+Inkling compares its **merge base with `main`** to its tip and pins both commits.
+`:Inkling review` without arguments opens a baseline picker.
+
+Start with the change overview, press **`f`** to choose a changed file, then
+**`c`** to switch between Changes, Before, and After. Changes labels additions,
+removals, modifications, unchanged context, and uncertainty. **`e`** steps into
+an element with your prompt; **`u`** steps out; **`b`** returns. **`a`** asks about
+behavior across the two versions. `v` still switches components/flow.
+
+Citations identify **before** or **after**. `Enter` opens that exact revision in
+a read-only source buffer, including removed code. Your checked-out branch and
+unsaved edits stay untouched. Local edits are excluded from the review.
+
+**`r` regenerates the pinned commits.** Run `:Inkling review` again to include
+new commits. Views are cached in memory by their evidence and comparison.
+Large reviews sample evidence within the configured budget; `?` shows coverage
+and `f` includes files not sampled. Diagrams still need human review, and layouts
+can change between Before and After. No GitHub/GitLab connection is needed.
 
 For rendered Mermaid, use **Kitty 0.28+**, `:set termguicolors`, and the
 [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli). Inkling sends images to

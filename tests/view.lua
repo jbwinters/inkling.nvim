@@ -188,6 +188,23 @@ reply(graph)
 while s.entry ~= narrow_entry and #s.history > 0 do view.back() end
 check("back restores narrower diagram and conversation", s.entry == narrow_entry and #s.entry.messages == 2)
 
+vim.api.nvim_set_current_win(s.win)
+s.selection = "guard"
+count = #requests
+view.expand()
+check("focus step in opens a prompt before generating", s.input and #requests == count)
+vim.api.nvim_buf_set_lines(s.input.buf, 0, -1, false, { "Trace how the guard delegates validation" })
+s.input.close(true)
+check("focus step in sends the requested direction", requests[#requests].job.tail:find("delegates validation", 1, true))
+vim.fn.writefile({ "def validate(user):", "    return user.verified" }, tmp .. "/deep.py")
+reply({ nodes = {}, edges = {}, read_paths = { "deep.py" }, search = "" })
+check("step in can gather deeper implementation", requests[#requests].job.head:find("return user.verified", 1, true)
+  and s.busy and s.entry == narrow_entry)
+reply(graph)
+check("focus step in starts its own conversation", s.entry.scope.expanded and #s.entry.messages == 0)
+view.back()
+check("focus step-in back preserves old conversation", s.entry == narrow_entry and #s.entry.messages == 2)
+
 count = #requests
 view.ask()
 local draft = s.input

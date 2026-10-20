@@ -10,7 +10,7 @@ local M = {}
 local state
 local ns = vim.api.nvim_create_namespace("inkling_view")
 local cache, cache_order = {}, {}
-local draw, draw_chat, generate, follow
+local draw, draw_chat, generate, follow, compose
 
 local function win_ok(win) return win and vim.api.nvim_win_is_valid(win) end
 local function buf_ok(buf) return buf and vim.api.nvim_buf_is_valid(buf) end
@@ -97,7 +97,7 @@ draw_chat = function()
       table.insert(lines, message.role == "user" and "You" or "Inkling")
       for _, line in ipairs(vim.split(message.text, "\n", { plain = true })) do table.insert(lines, line) end
       for _, ref in ipairs(message.sources or {}) do
-        table.insert(lines, ("  ↳ %s:%d-%d"):format(ref.path, ref.start_line, ref.end_line))
+        table.insert(lines, "  ↳ " .. source.ref_label(ref))
         s.chat_rows[#lines] = { ref = ref, context = message.context or e.context }
       end
       table.insert(lines, "")
@@ -121,13 +121,16 @@ draw = function()
   local e = s.entry
   local graphical = s.renderer == "mermaid"
   local mode = s.follow and "Following code · p pin" or "Pinned · p follow"
+  if e and e.scope.review then
+    mode = e.scope.review.base_ref .. "…" .. e.scope.review.head_ref .. " · c compare · f files"
+  end
   local lens = (e and e.scope.view or s.view) == "components" and "Components" or "Flow"
   local title = e and e.graph.title or "Inkling diagram"
   local c = s.image and s.image.camera
   local mode_hint = graphical and (c and (" · %d%% · 0 fit"):format(math.floor(c.zoom * 100 + 0.5)) or "") or " · text"
   local lines = { lens .. " · " .. title, e and snapshot_label(e) or "Waiting for source…",
     e and e.stale and "Source changed · r refresh" or mode .. mode_hint,
-    "/ find · a ask · u out · v view · ? actions", "" }
+    "/ find · e in · u out · a ask · ? actions", "" }
   s.rows = {}
   local styled = {}
   local highlights = e and vim.deepcopy(e.highlights) or {}
@@ -267,10 +270,13 @@ generate = function(scope, refinement, force, keep_messages)
   local previous = s.entry
   s.busy, s.status = true, "Generating " .. scope.view .. " for " .. scope.label .. "…"
   draw()
-  local request = job({ system = graphlib.system, schema = graphlib.schema_for(scope.view), head = prompt,
+  local investigate = scope.review or scope.expanded
+  local request = job({ system = graphlib.system .. (scope.review and ("\n\n" .. graphlib.review_system) or "")
+    .. (investigate and ("\n\n" .. graphlib.investigate_system) or ""),
+    schema = graphlib.schema_for(scope.view, scope.review, investigate), head = prompt,
     tail = ("\nView: %s. At most %d nodes and %d edges.\n%s"):format(scope.view, opts.max_nodes,
       opts.max_edges, refinement and ("User's focus for this view: " .. refinement) or "") })
-  local submit
+  local submit, reads = nil, 0
   submit = function(attempt)
     s.process = providers.run(request, nil, function(request_err, obj)
       vim.schedule(function()
@@ -281,6 +287,31 @@ generate = function(scope, refinement, force, keep_messages)
           s.status = "Source changed during generation; refresh or resume following."
           if s.entry then s.entry.stale = true end
           draw()
+          return
+        end
+        if not request_err and investigate and type(obj) == "table" and type(obj.nodes) == "table" and #obj.nodes == 0 then
+          if reads >= opts.max_reads then
+            s.status = "Diagram did not complete within the evidence budget; narrow the step-in prompt or choose a file."
+            draw()
+            return
+          end
+          reads = reads + 1
+          local more = graphlib.answer({ answer = "", read_paths = obj.read_paths, search = obj.search }, ctx, { by_id = {} })
+          source.extend(ctx, more.read_paths)
+          s.busy, s.status = true, "Inspecting supporting source…"
+          draw()
+          local function next_request()
+            if state ~= s or s.serial ~= id or not visible(s) then return end
+            s.search = nil
+            request.head = source.prompt(ctx)
+            if reads >= opts.max_reads then
+              request.tail = request.tail .. "\nEvidence budget exhausted. Return the diagram now and disclose unresolved gaps."
+            end
+            request.prompt_chars = #request.head + #request.tail
+            submit(attempt)
+          end
+          if more.search ~= "" then s.search = source.search(ctx, more.search, next_request)
+          else next_request() end
           return
         end
         local graph, validation_err
@@ -326,6 +357,10 @@ end
 
 function M.resume()
   if not state then return end
+  if not win_ok(state.source_win) or not source.eligible(vim.api.nvim_win_get_buf(state.source_win)) then
+    notify("Open a working source file in the code pane before resuming focus following")
+    return
+  end
   state.follow, state.last_focus = true, nil
   if win_ok(state.source_win) then vim.api.nvim_set_current_win(state.source_win) end
   follow(true)
@@ -393,8 +428,17 @@ local function open_ref(ref, context)
     notify("Source changed since this view; refresh before jumping to exact lines")
     return
   end
-  local path = source.path(context.root, ref.path)
-  if not path then return end
+  local buf
+  if context.scope.review then
+    local err
+    buf, err = require("inkling.view.review").open_buffer(context, ref)
+    if not buf then notify(err); return end
+  else
+    local path = source.path(context.root, ref.path)
+    if not path then return end
+    buf = vim.fn.bufadd(path)
+    vim.fn.bufload(buf)
+  end
   s.internal = true
   if win_ok(s.source_win) and s.source_win ~= s.win and s.source_win ~= s.chat_win then
     vim.api.nvim_set_current_win(s.source_win)
@@ -403,8 +447,6 @@ local function open_ref(ref, context)
     vim.cmd("leftabove vsplit")
     s.source_win = vim.api.nvim_get_current_win()
   end
-  local buf = vim.fn.bufadd(path)
-  vim.fn.bufload(buf)
   vim.api.nvim_win_set_buf(s.source_win, buf)
   vim.api.nvim_win_set_cursor(s.source_win, { ref.start_line, 0 })
   vim.cmd("normal! zz")
@@ -430,13 +472,13 @@ function M.source()
   end
   if #refs == 1 then open_ref(refs[1]); return end
   local e, items = s.entry, {}
-  for _, ref in ipairs(refs) do table.insert(items, { label = ("%s:%d-%d"):format(ref.path, ref.start_line, ref.end_line), ref = ref }) end
+  for _, ref in ipairs(refs) do table.insert(items, { label = source.ref_label(ref), ref = ref }) end
   picker.open(items, { title = "Source evidence", preview = function(item)
     return picker.evidence(e, { label = item.label, sources = { item.ref } })
   end }, function(item) if state == s and s.entry == e and item then open_ref(item.ref) end end)
 end
 
-function M.select(action)
+function M.select(action, prompt)
   local s = state
   if not s or not s.entry then return end
   M.pin()
@@ -456,7 +498,7 @@ function M.select(action)
     end
     vim.api.nvim_set_current_win(s.win)
     if next_action == "source" then M.source() elseif next_action == "ask" then M.ask()
-    elseif next_action == "expand" then M.expand() end
+    elseif next_action == "expand" then M.expand(prompt) end
   end
   picker.open(items, { title = action == "source" and "Open element source" or "Find diagram element",
     hint = "Enter " .. (action == "source" and "source" or "select") .. " · Ctrl-O source · Ctrl-A ask · Esc cancel",
@@ -465,24 +507,41 @@ function M.select(action)
   }, function(item) choose(item, action) end)
 end
 
-function M.expand()
+function M.expand(text)
   local s = state
   local n = selected(s)
-  if not n then M.select("expand"); return end
+  if not n then M.select("expand", text); return end
   if #n.sources == 0 then notify("Select an element with source evidence to expand"); return end
   if not current(s.entry) then notify("Refresh the changed source before expanding"); return end
   M.pin()
+  if not text or vim.trim(text) == "" then
+    local selection = n.id
+    vim.api.nvim_set_current_win(s.win)
+    compose(s, s.entry, "in:" .. n.id, "Step into " .. n.label .. " · what should we explore?", function(answer)
+      s.selection = selection
+      M.expand(answer)
+    end)
+    return
+  end
   local ref = n.sources[1]
-  local path = source.path(s.entry.context.root, ref.path)
-  local buf = vim.fn.bufadd(path)
-  vim.fn.bufload(buf)
-  local scope = source.focus(buf, ref.start_line, "flow")
+  local scope
+  if s.entry.scope.review then
+    scope = require("inkling.view.review").drill(s.entry.scope, n.sources, n.label)
+  else
+    local path = source.path(s.entry.context.root, ref.path)
+    if not path then return end
+    local buf = vim.fn.bufadd(path)
+    vim.fn.bufload(buf)
+    scope = source.focus(buf, ref.start_line, "flow")
+  end
   if not scope then return end
   scope.view = s.entry.scope.view
   scope.first, scope.last = math.min(scope.first, ref.start_line), math.max(scope.last, ref.end_line)
   scope.label, scope.expanded = n.label, true
+  scope.extra_refs = vim.deepcopy(n.sources)
   source.identify(scope)
-  generate(scope, "Expand the implementation of " .. n.label)
+  generate(scope, ("Step into %s. User's question/direction: %s\nShow the relevant implementation and evidenced dependencies.")
+    :format(n.label, text:sub(1, 4000)))
 end
 
 function M.set_view(view)
@@ -497,13 +556,17 @@ function M.set_view(view)
     if win_ok(s.source_win) and vim.api.nvim_win_get_buf(s.source_win) == old.bufnr then
       row = vim.api.nvim_win_get_cursor(s.source_win)[1]
     end
-    local scope = (old.expanded or old.widened) and refresh_scope(s.entry) or source.focus(old.bufnr, row, view)
+    local scope = (old.review or old.expanded or old.widened) and refresh_scope(s.entry) or source.focus(old.bufnr, row, view)
     if not scope then return end
     scope.view = view
     source.identify(scope)
     generate(scope, s.entry.refinement, false, true)
-  elseif s.target and source.eligible(s.target.bufnr) then
-    generate(source.focus(s.target.bufnr, s.target.first, view))
+  elseif s.target then
+    if s.target.review then
+      local scope = vim.deepcopy(s.target)
+      scope.view = view
+      generate(source.identify(scope))
+    elseif source.eligible(s.target.bufnr) then generate(source.focus(s.target.bufnr, s.target.first, view)) end
   end
 end
 
@@ -527,7 +590,7 @@ function M.choose_view()
   end)
 end
 
-local function compose(s, subject, kind, title, submit)
+compose = function(s, subject, kind, title, submit)
   if s.input and win_ok(s.input.win) then
     if s.input.kind == kind then
       vim.api.nvim_set_current_win(s.input.win)
@@ -725,7 +788,9 @@ function M.ask(question)
     local tail = "\nSelected element: " .. (s.selection or "whole diagram")
       .. (round >= config.options.view.max_reads and "\nEvidence budget exhausted. Give your answer now; describe any unresolved gaps."
         or "\nRequest additional source evidence only if needed to answer accurately.")
-    s.process = providers.run(job({ purpose = "question", system = graphlib.chat_system, schema = graphlib.answer_schema, head = head, tail = tail }),
+    s.process = providers.run(job({ purpose = "question", system = graphlib.chat_system
+      .. (e.scope.review and ("\n\n" .. graphlib.review_chat_system) or ""),
+      schema = graphlib.answer_schema_for(e.scope.review), head = head, tail = tail }),
       nil, function(err, obj)
         vim.schedule(function()
           if not alive() then return end
@@ -768,7 +833,11 @@ function M.actions()
   end
   add("v", "Choose view", "Components: nested responsibility boundaries and dependencies. Flow: decisions, conditions and execution paths.", M.choose_view)
   add("g", "Refine diagram", "Describe what to emphasize, for example: show only failure paths. This generates a new diagram and keeps the conversation.", function() M.refine() end)
-  add("e", "Expand element", "Generate a closer view of the selected element's implementation. Press b to return.", M.expand)
+  add("e", "Step in with a prompt", "Choose an element, then describe what to explore: implementation, failure paths, or a dependency. Ctrl-S sends; b returns.", function() M.expand() end)
+  if e and e.scope.review then
+    add("c", "Changes / Before / After", "Switch the comparison while keeping the same scope and pinned commits.", M.compare)
+    add("f", "Changed files", "Browse every changed file, including files not sampled in the overview.", M.review_files)
+  end
   local parent, boundary
   if e then parent, boundary = source.parent(e.scope) end
   if parent then
@@ -779,7 +848,9 @@ function M.actions()
       boundary or "Already at the widest source boundary.", M.out)
   end
   add("p", "Follow code", "Resume following the code cursor. Entering the diagram pins it again so you can inspect it.", M.resume)
-  add("r", "Refresh from source", "Generate a new diagram from current code. This starts a new conversation; the previous view remains in history.", M.refresh)
+  add("r", "Regenerate diagram", e and e.scope.review
+    and "Regenerate using these same pinned commits. Run :Inkling review again to capture new commits."
+    or "Generate from current code. Starts a new conversation; the previous view remains in history.", M.refresh)
   if #s.history > 0 then add("b", "Previous view", "Return to the preceding diagram and its conversation.", M.back) end
   add("0", "Fit diagram", "Fit the whole diagram. Pan with hjkl, arrows or mouse drag. Zoom with +/-, or the mouse wheel.", function() M.zoom(0) end)
   add("z", "Maximize / restore", "Give the diagram more space, then restore the previous pane sizes.", M.focus)
@@ -846,7 +917,84 @@ function M.close()
   end
 end
 
-function M.open(view)
+function M.compare(comparison)
+  local s = state
+  local e = s and s.entry
+  if not e or not e.scope.review then notify("Open a branch review with :Inkling review <base>"); return end
+  M.pin()
+  if not comparison then
+    local items = {
+      { value = "changes", label = "Changes · additions, removals and changed behavior", preview = {
+        "# Changes", "", "Compare both revisions with unchanged context. Labels show change classifications; inspect the cited evidence." } },
+      { value = "before", label = "Before · merge-base behavior", preview = {
+        "# Before", "", "Show the source at the common ancestor: " .. e.scope.review.before } },
+      { value = "after", label = "After · reviewed branch behavior", preview = {
+        "# After", "", "Show the branch at the pinned commit: " .. e.scope.review.after } },
+    }
+    for _, item in ipairs(items) do if item.value == e.scope.comparison then item.label = item.label .. " (current)" end end
+    picker.open(items, { title = "Review comparison" }, function(item)
+      if state == s and s.entry == e and item then M.compare(item.value) end
+    end)
+    return
+  end
+  if comparison == e.scope.comparison then return end
+  if not vim.tbl_contains({ "changes", "before", "after" }, comparison) then return end
+  local scope = vim.deepcopy(e.scope)
+  scope.comparison = comparison
+  generate(source.identify(scope), e.refinement, false, true)
+end
+
+function M.review_files()
+  local s = state
+  local e = s and s.entry
+  if not e or not e.scope.review then notify("Open a branch review with :Inkling review <base>"); return end
+  M.pin()
+  local items = {}
+  local labels = { A = "Added", D = "Removed", R = "Renamed", M = "Modified", T = "Type changed", C = "Copied" }
+  for _, change in ipairs(e.scope.review.changes) do
+    local label = (labels[change.status] or change.status) .. " · " .. (change.after or change.before)
+    if change.before and change.after and change.before ~= change.after then label = label .. " ← " .. change.before end
+    table.insert(items, { label = label, change = change, preview = {
+      "# " .. label, "", "Enter opens a diagram of this file at the review's pinned commits.",
+      "Before: " .. (change.before or "(absent)"), "After: " .. (change.after or "(absent)"),
+      "", "This list includes files not inspected by the overview. Binary and oversized files may have no diagram evidence.",
+    } })
+  end
+  picker.open(items, { title = "Changed files · " .. #items }, function(item)
+    if state == s and s.entry == e and item then
+      generate(source.identify(require("inkling.view.review").file_scope(e.scope, item.change)))
+    end
+  end)
+end
+
+function M.review(base, head)
+  local git = require("inkling.view.git")
+  local buf = vim.api.nvim_get_current_buf()
+  local cwd = source.eligible(buf) and vim.fs.dirname(vim.api.nvim_buf_get_name(buf))
+    or (state and state.entry and state.entry.scope.root) or vim.fn.getcwd()
+  if not base or base == "" then
+    local items = vim.tbl_map(function(branch) return { label = branch } end, git.branches(cwd))
+    if #items == 0 then notify("No local branches found; use :Inkling review <base> [head]"); return end
+    picker.open(items, { title = "Review current branch · choose base" }, function(item)
+      if item then M.review(item.label, head) end
+    end)
+    return
+  end
+  local review, err = git.start(cwd, base, head)
+  if not review then notify(err); return end
+  local scope = source.identify(require("inkling.view.review").scope(review))
+  if state and visible(state) then
+    M.pin()
+    generate(scope)
+    vim.api.nvim_set_current_win(state.win)
+  else
+    if state then M.close() end
+    M.open("components", scope)
+    vim.api.nvim_set_current_win(state.win)
+  end
+end
+
+function M.open(view, provided_scope)
   view = view or (state and state.view) or "components"
   if view ~= "components" and view ~= "flow" then notify("Views: components, flow"); return end
   if state then
@@ -855,9 +1003,9 @@ function M.open(view)
     return
   end
   local buf, win = vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win()
-  if not source.eligible(buf) then notify("Open a named source buffer first"); return end
-  local scope = source.focus(buf, vim.api.nvim_win_get_cursor(win)[1], view)
-  local s = { view = view, follow = true, internal = true, source_win = win, serial = 0,
+  if not provided_scope and not source.eligible(buf) then notify("Open a named source buffer first"); return end
+  local scope = provided_scope or source.focus(buf, vim.api.nvim_win_get_cursor(win)[1], view)
+  local s = { view = view, follow = not scope.review, internal = true, source_win = win, serial = 0,
     history = {}, rows = {}, renderer = config.options.view.renderer }
   state = s
   if s.renderer ~= "native" then
@@ -871,7 +1019,8 @@ function M.open(view)
   window_options(s.win)
   local maps = {
     ["<CR>"] = { M.source, "open source" }, a = { function() M.ask() end, "ask" },
-    e = { M.expand, "expand" }, v = { M.choose_view, "choose view" },
+    e = { function() M.expand() end, "step in with a prompt" }, v = { M.choose_view, "choose view" },
+    c = { function() M.compare() end, "review comparison" }, f = { M.review_files, "changed files" },
     u = { M.out, "step out to wider perspective" },
     ["?"] = { M.actions, "actions" }, ["<Esc>"] = { M.deselect, "clear selection" },
     p = { function() if s.follow then M.pin() else M.resume() end end, "pin / follow" },
@@ -968,13 +1117,17 @@ function M.setup()
   vim.api.nvim_create_autocmd("VimLeavePre", { group = group, callback = M.close })
 end
 
-M.commands = { "components", "flow", "close", "pin", "follow", "refresh", "back", "source", "expand", "out", "ask", "refine", "mermaid", "export", "focus", "fit", "zoom-in", "zoom-out", "actions", "select" }
+M.commands = { "components", "flow", "close", "pin", "follow", "refresh", "back", "source", "expand", "in", "out", "ask", "refine", "mermaid", "export", "focus", "fit", "zoom-in", "zoom-out", "actions", "select", "compare", "changes", "before", "after", "files" }
 function M.command(args)
   local action = args[2]
   if not action or action == "components" or action == "flow" then return M.open(action) end
   local actions = { close = M.close, pin = M.pin, follow = M.resume, refresh = M.refresh, back = M.back,
     actions = M.actions, select = M.select, out = M.out,
-    source = M.source, expand = M.expand, mermaid = M.mermaid, export = M.export, focus = M.focus,
+    source = M.source, expand = function() M.expand(table.concat(args, " ", 3)) end,
+    ["in"] = function() M.expand(table.concat(args, " ", 3)) end,
+    compare = function() M.compare() end, changes = function() M.compare("changes") end,
+    before = function() M.compare("before") end, after = function() M.compare("after") end, files = M.review_files,
+    mermaid = M.mermaid, export = M.export, focus = M.focus,
     fit = function() M.zoom(0) end, ["zoom-in"] = function() M.zoom(1.25) end, ["zoom-out"] = function() M.zoom(0.8) end,
     ask = function() M.ask(table.concat(args, " ", 3)) end,
     refine = function() M.refine(table.concat(args, " ", 3)) end }

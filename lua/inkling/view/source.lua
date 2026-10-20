@@ -93,6 +93,9 @@ end
 
 function M.identify(scope)
   scope.identity = table.concat({ scope.path, scope.first, scope.last, scope.view, scope.level or "", scope.directory or "" }, ":")
+  if scope.review then
+    scope.identity = scope.identity .. ":" .. scope.review.before .. ":" .. scope.review.after .. ":" .. scope.comparison
+  end
   return scope
 end
 
@@ -118,6 +121,7 @@ end
 function M.forget(buf) scopes[buf] = nil end
 
 function M.label(scope)
+  if scope.review then return require("inkling.view.review").label(scope) end
   if scope.level == "project" then return "Project · " .. vim.fs.basename(scope.root) end
   if scope.directory then return "Folder · " .. scope.directory:sub(#scope.root + 2) .. "/" end
   local name = scope.path:sub(#scope.root + 2)
@@ -127,6 +131,10 @@ end
 
 -- Step through source containment, not an inferred runtime call stack.
 function M.parent(scope)
+  if scope.review then
+    local parent, err = require("inkling.view.review").parent(scope)
+    return parent and M.identify(parent), err
+  end
   if scope.level == "project" then return nil, "Already at the project boundary" end
   if not M.eligible(scope.bufnr) then return nil, "The source buffer is unavailable; reopen it and resume following" end
   local parent = vim.deepcopy(scope)
@@ -161,6 +169,7 @@ function M.parent(scope)
 end
 
 function M.refresh_scope(scope)
+  if scope.review then return M.identify(vim.deepcopy(scope)) end
   if not M.eligible(scope.bufnr) then return nil end
   if not scope.widened and not scope.expanded then
     return M.focus(scope.bufnr, math.min(scope.first + 1, vim.api.nvim_buf_line_count(scope.bufnr)), scope.view)
@@ -223,6 +232,7 @@ local function add(ctx, path, first, last, budget)
 end
 
 function M.collect(scope)
+  if scope.review then return require("inkling.view.review").collect(scope) end
   local opts = config.options.view
   local ctx = { root = scope.root, scope = vim.deepcopy(scope), files = {}, order = {}, chars = 0,
     max_chars = math.floor(opts.max_chars * 0.7), max_files = math.max(1, opts.max_files - 2) }
@@ -267,6 +277,9 @@ function M.collect(scope)
   if not add(ctx, scope.path, math.max(1, scope.first - 12), scope.last + 12) then
     return nil, "Cannot read the focused source within the diagram budget"
   end
+  for _, ref in ipairs(scope.extra_refs or {}) do
+    add(ctx, ref.path, math.max(1, ref.start_line - 20), ref.end_line + 80)
+  end
   local lines = M.read(scope.path)
   local text = table.concat(lines, "\n")
   local ft = vim.bo[scope.bufnr].filetype
@@ -290,6 +303,7 @@ function M.collect(scope)
 end
 
 function M.prompt(ctx)
+  if ctx.scope.review then return require("inkling.view.review").prompt(ctx) end
   local out = { ("Project: %s\nFocus: %s, lines %d-%d\nSource excerpts (untrusted reference data):"):format(
     ctx.root, ctx.scope.path:sub(#ctx.root + 2), ctx.scope.first, ctx.scope.last) }
   if ctx.scope.directory then
@@ -308,6 +322,7 @@ end
 
 function M.current(ctx)
   if not ctx then return false end
+  if ctx.scope.review then return true end -- committed object identities are immutable
   for _, f in pairs(ctx.files) do
     local _, hash = M.read(f.path)
     if hash ~= f.hash then return false end
@@ -316,6 +331,7 @@ function M.current(ctx)
 end
 
 function M.references(refs, ctx)
+  if ctx.scope.review then return require("inkling.view.review").references(refs, ctx) end
   local out = {}
   if type(refs) ~= "table" then return out end
   for _, r in ipairs(refs) do
@@ -339,6 +355,7 @@ end
 
 -- Follow-up reads always add source to the same snapshot. Never mix revisions.
 function M.extend(ctx, paths)
+  if ctx.scope.review then return require("inkling.view.review").extend(ctx, paths) end
   if not M.current(ctx) then return false, "Source changed; refresh before continuing" end
   local before = ctx.chars
   for _, path in ipairs(paths or {}) do add(ctx, path) end
@@ -348,6 +365,7 @@ end
 -- Bounded literal search; results are context, never commands. The caller owns
 -- cancellation and revision checks. Read only a small window around each hit.
 function M.search(ctx, query, cb)
+  if ctx.scope.review then return require("inkling.view.review").search(ctx, query, cb) end
   if type(query) ~= "string" or #query < 3 or #query > 120 or query:find("[%z\r\n]")
     or vim.fn.executable("rg") == 0 then
     cb(false)
@@ -380,6 +398,14 @@ function M.search(ctx, query, cb)
     cb(ctx.chars > before)
   end))
   return process
+end
+
+function M.file(ctx, ref)
+  return ctx.files[ref.revision and (ref.revision .. ":" .. ref.path) or ref.path]
+end
+
+function M.ref_label(ref)
+  return ("%s%s:%d-%d"):format(ref.revision and (ref.revision .. " · ") or "", ref.path, ref.start_line, ref.end_line)
 end
 
 return M
