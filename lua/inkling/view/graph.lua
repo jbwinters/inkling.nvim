@@ -36,7 +36,14 @@ not chronological steps, guards, or early returns; those belong to the flow view
 Include calls or data dependencies between components when present; containment alone
 does not explain how components interact.
 For flow, show execution decisions, branches, side effects, failure paths and exits.
-The supplied Focus range is the subject: keep flow inside that function or range.
+The Perspective defines the subject. For a function, keep flow inside that range.
+For class and file perspectives, show responsibilities at that boundary. For folder
+and project perspectives, group the evidenced areas into a broader component map;
+do not merely redraw the anchor file. If a wider perspective requests flow, show
+evidenced interactions between its major parts rather than every internal statement.
+Wider perspectives contain a bounded sample of source, often only imports and
+declarations. Never invent subsystems or execution paths from directory names;
+state missing behavior and uninspected areas explicitly. Do not claim full coverage.
 Surrounding excerpts explain calls; they do not widen the flow to callers or siblings.
 Represent early returns and failures with explicit exit nodes, separate from successful
 side effects. An edge means execution reaches its target: never connect a return path
@@ -144,6 +151,7 @@ function M.validate(obj, ctx, opts)
   if missing > 0 then
     table.insert(graph.omissions, ("%d elements have no valid source reference; inspect before relying on them."):format(missing))
   end
+  if ctx.coverage then table.insert(graph.omissions, ctx.coverage) end
   for _, path in ipairs(ctx.order) do
     local f = ctx.files[path]
     if f.count < f.total then

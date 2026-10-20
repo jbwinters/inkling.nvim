@@ -325,6 +325,7 @@ Diagram-local normal-mode keys:
   <Esc>     Clear the selected element.
   a         Ask a question about the diagram or selected element.
   e         Expand the selected element using its first source reference.
+  u         Step out to the enclosing class, file, folder, or project.
   v         Choose components / flow with descriptions.
   g         Refine the view, e.g. "show only failure paths".
   p         Pin the scope / resume following source focus.
@@ -339,6 +340,19 @@ Diagram-local normal-mode keys:
   Mouse     Left-drag pans; wheel zooms at the pointer (:set mouse=a).
   z         Maximize the diagram / restore window sizes.
   q         Close the diagram and conversation windows.
+
+Step out widens the displayed subject and opens a pinned component overview.
+Recognized classes use declaration/indentation heuristics; standalone functions
+step directly to their file. Further steps follow containing folders up to the
+project boundary. The header names the boundary, and ? previews the next step.
+b returns with the prior conversation, or cancels widening still in progress.
+Refresh, refinement, and view changes keep the widened scope; p follows code again.
+
+Folder/project perspectives require ripgrep (rg). They sample sibling areas and
+entry points within the file/character budget, respect ignore rules, and use
+numbered source excerpts from large files. Partial coverage is always disclosed;
+these views do not claim to model the complete system. Detail/recursion presets
+are planned separately. Canvas zoom still changes only image magnification.
 
 Entering the diagram, asking a question, expanding, or opening source pins the
 subject. Source navigation therefore does not replace the diagram. Use p or
@@ -367,6 +381,7 @@ Equivalent commands:
   :Inkling view pin           :Inkling view follow
   :Inkling view refresh       :Inkling view back
   :Inkling view source        :Inkling view expand
+  :Inkling view out
   :Inkling view ask [text]    :Inkling view refine [text]
   :Inkling view mermaid       :Inkling view export
   :Inkling view fit           :Inkling view zoom-in

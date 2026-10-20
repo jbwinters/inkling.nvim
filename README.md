@@ -146,6 +146,17 @@ dependencies. Flow view follows the enclosing function when it can identify one.
 The scope and whether it is following or pinned appear at the top of the diagram.
 Press `v` to choose a view with a description of what each one shows.
 
+Press **`u` to step out** to a wider perspective: enclosing class when recognized,
+then file, containing folders, and project. Each step opens a component overview
+and stays pinned. **`b` returns** to the previous diagram and conversation; it
+also cancels a wider view still generating. `e` expands a selected element.
+Refresh and view changes preserve the wider boundary; `p` resumes following code.
+
+Folder/project perspectives need `rg` and sample source within the existing
+budget. The header names the scope and shows **partial evidence**; `?` exposes
+coverage details. These boundaries come from code containment. Recursive detail
+presets are planned; `+` / `-` still only change the image's magnification.
+
 If [Telescope](https://github.com/nvim-telescope/telescope.nvim) is installed,
 Inkling uses it for fuzzy element search, source previews, and the action menu.
 Type to filter, use `Ctrl-n` / `Ctrl-p` to move, and `Esc` to cancel. In the element
@@ -174,6 +185,7 @@ without graphics support. In that view, `j` / `k` navigate boxes and source evid
 | `Esc` | clear the selected element |
 | `a` | ask about the diagram or selected element |
 | `e` | expand the selected element's implementation |
+| `u` | step out to the enclosing class, file, folder, or project |
 | `v` | choose components or flow with descriptions |
 | `g` | refine the view, e.g. “show only failure paths” |
 | `p` | pin / resume following source focus |
@@ -388,6 +400,7 @@ nvim --headless -u NONE -l tests/edits.lua                # recent-edit tracking
 nvim --headless -u NONE -l tests/stream.lua               # streaming display (fake provider)
 nvim --headless -u NONE -l tests/nextedit.lua             # next-edit prediction (fake provider)
 nvim --headless -u NONE -l tests/view.lua                 # diagrams, focus, evidence, conversation (fake provider)
+nvim --headless -u NONE -l tests/view_scope.lua           # enclosing scopes, wider evidence, ignore rules and budgets
 nvim --headless -u NONE -l tests/view_provider.lua        # diagram provider overrides (fake HTTP)
 nvim --headless -u NONE -l tests/view_render.lua          # image lifecycle (fake terminal)
 nvim --headless -u NONE -l tests/view_canvas.lua          # camera geometry and graphics protocol

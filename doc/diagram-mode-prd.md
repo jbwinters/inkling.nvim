@@ -2,7 +2,9 @@
 
 Status: focus following and conversation are implemented. Mermaid now renders
 inside Neovim with mouse and keyboard pan/zoom. Component boundaries and flow
-steps use separate generation schemas. Git branch review and ERDs remain
+steps use separate generation schemas. Step out widens the perspective through
+recognized classes, files, containing folders, and the project boundary.
+Git branch review, ERDs, and diagram-detail controls remain
 follow-on work; no GitHub or GitLab integration is required.
 
 ## Problem and outcome
@@ -25,6 +27,9 @@ prompt or leaving Neovim.
 - Start with following the user's focus. Git branch review is equally important
   to the longer-term product, but follows the browsing experience.
 - Keep scope, diagram type, and source revision separate.
+- Separate perspective (what surrounds this code) from detail (how much of the
+  inside to show). Widening the subject is the next implemented navigation step;
+  recursive investigation and detail presets are subsequent work.
 - Components use nested boundaries; flow shows decisions, failures, side effects,
   and exits. ERDs later show explicit entities, keys, and cardinalities.
 - Chat inherits scope, diagram selection, and source revision. It can inspect
@@ -57,6 +62,43 @@ diagram requests. Examples: "Can this retry forever?", "What if the request
 finishes after switching buffers?", and "Show the failure paths". View changes
 use a refinement command so the distinction between an answer and a new view is
 explicit. Answers highlight relevant graph elements and cite source ranges.
+
+## Perspective navigation
+
+`u` / `:Inkling view out` steps out from the displayed subject. For a method,
+prefer a recognized enclosing class, then the whole file. Standalone functions
+step directly to their file. Files widen to their containing folder, then parent
+folders until the existing project boundary. Class detection uses declaration and
+indentation heuristics; unsupported structures skip to the file. Folder names
+are source boundaries, not proof of a domain component or subsystem.
+
+Each outward step opens a component overview and pins it. The header names the
+actual boundary; the action menu previews the next boundary. The previous diagram
+stays visible until the new one is ready. `b` restores it with its conversation,
+or cancels an outward step still generating. `e` remains the action for expanding
+a selected element's implementation. Refresh, refinement, and changing diagram
+type preserve an explicitly widened scope; following code resumes cursor scope.
+
+Folder/project views use bounded, ignore-aware file discovery with ripgrep.
+Sample the anchor and sibling areas, preferring entry points, within existing
+file/character budgets. Large files contribute numbered imports and declaration
+excerpts. Source citations must still refer to inspected ranges. Display partial
+coverage in the canvas and include it in omissions independently of the model.
+Do not present a sampled project view as an exhaustive system model.
+
+Wider subjects start their own conversations. Reject stepping out of a stale
+snapshot until refreshed, stop at the project boundary, and keep scope metadata
+in cache decisions so switching perspectives cannot silently change navigation.
+
+The next detail-control iteration should keep the chosen perspective fixed:
+
+- **Overview**: major responsibilities and interactions, little internal detail.
+- **Structure**: nested subcomponents and the relationships between them.
+- **Trace deeper**: investigate calls/dependencies across further implementation
+  boundaries, showing what was inspected and where the evidence budget stopped.
+
+These are planned product concepts, not controls shipped by this change. Pixel
+zoom continues to change only canvas magnification; it never requests more code.
 
 ## Evidence and revisions
 
@@ -118,6 +160,9 @@ in memory; Mermaid export opens an editable scratch buffer for an explicit save.
 10. Mouse and keyboard can pan, zoom, and fit the rendered diagram without AI requests.
 11. Components have nested boundaries; flow has distinct steps/decisions and execution arrows.
 12. Existing completion and next-edit tests continue to pass.
+13. Step out follows real enclosing boundaries, remains pinned, and stops at the project.
+14. Back cancels pending widening or restores the previous scope and conversation.
+15. Wider views preserve their scope across refresh/view changes and disclose partial evidence.
 
 ## Follow-on releases
 
@@ -210,3 +255,13 @@ Workspace UX refinement (2026-10-19):
   checks without new model calls. Real Telescope integration checks cover wide
   and narrow layouts (155x75, 80x35, 60x24); deterministic workspace tests cover
   draft submission, stale callbacks, and the fallback without Telescope.
+
+Perspective-navigation validation (2026-10-19):
+
+- 148 checks pass across workspace, scope/evidence, rendering, and canvas suites.
+  Coverage includes Python/TypeScript class boundaries, nested classes, folder
+  ancestry, project limits, ignore rules, source budgets, historical conversations,
+  pending-step cancellation, stale snapshots, and keeping widened scopes on refresh.
+- Loaded controls and verified the action preview and bounded source collection
+  in fm:5.1 against the existing providers-module diagram. Live generation of the
+  wider view is awaiting explicit authorization for the configured provider.

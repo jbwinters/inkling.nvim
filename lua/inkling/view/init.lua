@@ -75,7 +75,7 @@ local function selected(s)
 end
 
 local function snapshot_label(e)
-  return ("%s:%d-%d"):format(e.scope.path:sub(#e.scope.root + 2), e.scope.first, e.scope.last)
+  return source.label(e.scope)
 end
 
 local function element_label(e, node)
@@ -127,7 +127,7 @@ draw = function()
   local mode_hint = graphical and (c and (" · %d%% · 0 fit"):format(math.floor(c.zoom * 100 + 0.5)) or "") or " · text"
   local lines = { lens .. " · " .. title, e and snapshot_label(e) or "Waiting for source…",
     e and e.stale and "Source changed · r refresh" or mode .. mode_hint,
-    "/ find · a ask · v view · ? actions", "" }
+    "/ find · a ask · u out · v view · ? actions", "" }
   s.rows = {}
   local styled = {}
   local highlights = e and vim.deepcopy(e.highlights) or {}
@@ -159,7 +159,8 @@ draw = function()
     end
     local node = e and s.selection and e.graph.by_id[s.selection]
     lines[5] = s.status and s.status ~= "" and s.status or (s.image and s.image.camera
-      and (node and ("Selected: " .. element_label(e, node)) or "hjkl / drag pan · +/- / wheel zoom") or "Rendering Mermaid…")
+      and (node and ("Selected: " .. element_label(e, node)) or (e and e.context.coverage
+        and ("Partial evidence · " .. #e.context.order .. " files · ? coverage") or "hjkl / drag pan · +/- / wheel zoom")) or "Rendering Mermaid…")
     local grid = s.image and s.image:draw(columns, image_height)
     s.canvas_top, s.canvas_height = 5, image_height
     if grid then
@@ -250,9 +251,18 @@ generate = function(scope, refinement, force, keep_messages)
   if opts.provider then name, p = opts.provider, config.options.providers[opts.provider] end
   if not p then s.status = "Unknown diagram provider"; draw(); return end
   local prompt = source.prompt(ctx)
-  local key = vim.fn.sha256(prompt .. scope.view .. (refinement or "") .. name .. (opts.model or p.model) .. (p.url or "")
-    .. vim.json.encode(p.extra_body or {}) .. opts.max_nodes .. ":" .. opts.max_edges)
-  if not force and cache[key] and current(cache[key]) then install(s, cache[key]); return end
+  local key = vim.fn.sha256(prompt .. (ctx.inventory or "") .. scope.view .. (refinement or "") .. name .. (opts.model or p.model) .. (p.url or "")
+    .. vim.json.encode(p.extra_body or {}) .. opts.max_nodes .. ":" .. opts.max_edges
+    .. (scope.widened and ":wide" or ":focus") .. (scope.expanded and ":expanded" or ""))
+  if not force and cache[key] and current(cache[key]) then
+    local cached = cache[key]
+    if keep_messages and s.entry and s.entry.scope.path == scope.path and current(s.entry) then
+      cached = vim.deepcopy(cached)
+      cached.messages, cached.highlights = vim.deepcopy(s.entry.messages), {}
+    end
+    install(s, cached)
+    return
+  end
   local id = s.serial
   local previous = s.entry
   s.busy, s.status = true, "Generating " .. scope.view .. " for " .. scope.label .. "…"
@@ -303,9 +313,10 @@ end
 
 function M.pin()
   if state then
+    local was_following = state.follow
     state.follow = false
     if state.timer then state.timer:stop() end
-    if state.busy and not state.pending and state.entry then
+    if was_following and state.busy and not state.pending and state.entry then
       stop(state)
       state.status = "Pinned the displayed diagram."
     end
@@ -322,16 +333,7 @@ function M.resume()
 end
 
 local function refresh_scope(e)
-  local scope = vim.deepcopy(e.scope)
-  if not source.eligible(scope.bufnr) then return nil end
-  if not scope.expanded then
-    local row = math.min(scope.first + 1, vim.api.nvim_buf_line_count(scope.bufnr))
-    scope = source.focus(scope.bufnr, row, scope.view)
-  else
-    scope.last = math.min(scope.last, vim.api.nvim_buf_line_count(scope.bufnr))
-    scope.tick = vim.api.nvim_buf_get_changedtick(scope.bufnr)
-  end
-  return scope
+  return source.refresh_scope(e.scope)
 end
 
 function M.refresh()
@@ -342,19 +344,42 @@ function M.refresh()
     return
   end
   local scope = refresh_scope(s.entry)
-  if not scope then notify("The source buffer is unavailable; open it and resume following"); return end
+  if not scope then notify("Cannot locate this source scope; resume following from its code"); return end
   generate(scope, s.entry.refinement, true)
 end
 
 function M.back()
   local s = state
-  if not s or #s.history == 0 then return end
+  if not s then return end
+  if s.busy and not s.pending and s.entry then
+    stop(s)
+    s.follow, s.target, s.status = false, vim.deepcopy(s.entry.scope), ""
+    draw()
+    return
+  end
+  if #s.history == 0 then return end
   if s.input then s.input.close(false) end
   stop(s)
   s.follow, s.entry, s.selection, s.status = false, table.remove(s.history), nil, ""
   s.view = s.entry.scope.view
   s.entry.stale = not current(s.entry)
   draw()
+end
+
+function M.out()
+  local s = state
+  if not s or not s.entry then notify("Open a diagram first with :Inkling view"); return end
+  if not current(s.entry) then
+    s.entry.stale = true
+    draw()
+    notify("Refresh the changed source before stepping out")
+    return
+  end
+  local scope, err = source.parent(s.entry.scope)
+  if not scope then notify(err); return end
+  M.pin()
+  -- A wider subject starts its own conversation. Back restores the old one.
+  generate(scope)
 end
 
 local function open_ref(ref, context)
@@ -456,7 +481,7 @@ function M.expand()
   scope.view = s.entry.scope.view
   scope.first, scope.last = math.min(scope.first, ref.start_line), math.max(scope.last, ref.end_line)
   scope.label, scope.expanded = n.label, true
-  scope.identity = path .. ":" .. scope.first .. ":" .. scope.last .. ":" .. scope.view
+  source.identify(scope)
   generate(scope, "Expand the implementation of " .. n.label)
 end
 
@@ -472,10 +497,10 @@ function M.set_view(view)
     if win_ok(s.source_win) and vim.api.nvim_win_get_buf(s.source_win) == old.bufnr then
       row = vim.api.nvim_win_get_cursor(s.source_win)[1]
     end
-    local scope = old.expanded and refresh_scope(s.entry) or source.focus(old.bufnr, row, view)
+    local scope = (old.expanded or old.widened) and refresh_scope(s.entry) or source.focus(old.bufnr, row, view)
     if not scope then return end
     scope.view = view
-    scope.identity = scope.path .. ":" .. scope.first .. ":" .. scope.last .. ":" .. view
+    source.identify(scope)
     generate(scope, s.entry.refinement, false, true)
   elseif s.target and source.eligible(s.target.bufnr) then
     generate(source.focus(s.target.bufnr, s.target.first, view))
@@ -491,7 +516,9 @@ function M.choose_view()
       preview = { "# Components", "", "Nested boxes group responsibilities in this file and its local dependencies.", "",
         "Use this to understand what owns each responsibility and how parts connect." } },
     { view = "flow", label = "Flow · decisions and execution paths",
-      preview = { "# Flow", "", "Steps, decisions, branches, failures and exits in the function at your code cursor.", "",
+      preview = { "# Flow", "", s.entry and s.entry.scope.widened
+        and "Interactions and execution paths at the current wider scope. Step out preserves this boundary when switching views."
+        or "Steps, decisions, branches, failures and exits in the function at your code cursor.", "",
         "Use this to check what happens under a condition and which paths can reach an action." } },
   }
   for _, item in ipairs(items) do if item.view == s.view then item.label = item.label .. " (current)" end end
@@ -742,6 +769,15 @@ function M.actions()
   add("v", "Choose view", "Components: nested responsibility boundaries and dependencies. Flow: decisions, conditions and execution paths.", M.choose_view)
   add("g", "Refine diagram", "Describe what to emphasize, for example: show only failure paths. This generates a new diagram and keeps the conversation.", function() M.refine() end)
   add("e", "Expand element", "Generate a closer view of the selected element's implementation. Press b to return.", M.expand)
+  local parent, boundary
+  if e then parent, boundary = source.parent(e.scope) end
+  if parent then
+    add("u", "Step out · " .. source.label(parent), "Widen to " .. source.label(parent)
+      .. ". Opens a component overview and pins it. Folder/project views sample source within the evidence budget. Press b to return with your conversation.", M.out)
+  elseif e then
+    add("u", e.scope.level == "project" and "Step out · project boundary" or "Step out · unavailable",
+      boundary or "Already at the widest source boundary.", M.out)
+  end
   add("p", "Follow code", "Resume following the code cursor. Entering the diagram pins it again so you can inspect it.", M.resume)
   add("r", "Refresh from source", "Generate a new diagram from current code. This starts a new conversation; the previous view remains in history.", M.refresh)
   if #s.history > 0 then add("b", "Previous view", "Return to the preceding diagram and its conversation.", M.back) end
@@ -836,6 +872,7 @@ function M.open(view)
   local maps = {
     ["<CR>"] = { M.source, "open source" }, a = { function() M.ask() end, "ask" },
     e = { M.expand, "expand" }, v = { M.choose_view, "choose view" },
+    u = { M.out, "step out to wider perspective" },
     ["?"] = { M.actions, "actions" }, ["<Esc>"] = { M.deselect, "clear selection" },
     p = { function() if s.follow then M.pin() else M.resume() end end, "pin / follow" },
     r = { M.refresh, "refresh" }, b = { M.back, "previous view" }, ["/"] = { M.select, "select element" },
@@ -931,12 +968,12 @@ function M.setup()
   vim.api.nvim_create_autocmd("VimLeavePre", { group = group, callback = M.close })
 end
 
-M.commands = { "components", "flow", "close", "pin", "follow", "refresh", "back", "source", "expand", "ask", "refine", "mermaid", "export", "focus", "fit", "zoom-in", "zoom-out", "actions", "select" }
+M.commands = { "components", "flow", "close", "pin", "follow", "refresh", "back", "source", "expand", "out", "ask", "refine", "mermaid", "export", "focus", "fit", "zoom-in", "zoom-out", "actions", "select" }
 function M.command(args)
   local action = args[2]
   if not action or action == "components" or action == "flow" then return M.open(action) end
   local actions = { close = M.close, pin = M.pin, follow = M.resume, refresh = M.refresh, back = M.back,
-    actions = M.actions, select = M.select,
+    actions = M.actions, select = M.select, out = M.out,
     source = M.source, expand = M.expand, mermaid = M.mermaid, export = M.export, focus = M.focus,
     fit = function() M.zoom(0) end, ["zoom-in"] = function() M.zoom(1.25) end, ["zoom-out"] = function() M.zoom(0.8) end,
     ask = function() M.ask(table.concat(args, " ", 3)) end,

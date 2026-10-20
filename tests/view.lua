@@ -157,6 +157,37 @@ vim.api.nvim_win_set_cursor(s.chat_win, { 4, 0 })
 view.pin()
 check("redrawing preserves conversation reading position", vim.api.nvim_win_get_cursor(s.chat_win)[1] == 4)
 
+local narrow_entry = s.entry
+vim.cmd("Inkling view out")
+check("step out pins and requests a wider component scope", s.target.level == "file"
+  and s.target.view == "components" and not s.follow and s.entry == narrow_entry)
+local widening = requests[#requests]
+view.pin()
+check("inspecting a pinned generation does not cancel step out", not widening.killed)
+view.back()
+widening.cb(nil, graph)
+settle()
+check("back cancels pending step out and ignores late results", widening.killed and s.entry == narrow_entry and not s.busy)
+view.out()
+reply(graph)
+check("wider view starts its own conversation", s.entry.scope.level == "file" and #s.entry.messages == 0)
+view.out()
+check("file at root widens to project", s.target.level == "project" and s.target.directory == tmp)
+reply(graph)
+local wide_entry = s.entry
+check("project diagram exposes partial coverage", table.concat(wide_entry.graph.omissions, "\n"):find("Partial perspective", 1, true))
+count = #requests
+view.out()
+check("step out stops at project without a request", #requests == count and s.entry == wide_entry)
+view.set_view("flow")
+check("switching view preserves a widened subject", s.target.level == "project" and s.target.directory == tmp and s.target.view == "flow")
+reply(graph)
+view.refresh()
+check("refresh preserves the project perspective", s.target.level == "project" and s.target.directory == tmp)
+reply(graph)
+while s.entry ~= narrow_entry and #s.history > 0 do view.back() end
+check("back restores narrower diagram and conversation", s.entry == narrow_entry and #s.entry.messages == 2)
+
 count = #requests
 view.ask()
 local draft = s.input
@@ -180,6 +211,14 @@ old_selection_menu.choose(old_selection_menu.items[2])
 check("picker callback cannot select into a different diagram", s.selection == old_selection)
 check("switching lens keeps conversation", #s.entry.messages == 2 and s.entry.scope.view == "components")
 check("components lens restores the file scope", s.entry.scope.first == 1 and s.entry.scope.last == 7)
+local component_entry = s.entry
+table.insert(component_entry.messages, { role = "user", text = "Remember this current question when changing views" })
+count = #requests
+view.set_view("flow")
+check("cached lens changes keep the current conversation", #requests == count and #s.entry.messages == 3
+  and s.entry.messages[3].text:find("current question", 1, true))
+view.back()
+table.remove(component_entry.messages)
 vim.api.nvim_win_set_cursor(original_win, { 7, 0 })
 view.set_view("flow")
 check("flow lens uses the current source function", s.target.first == 6 and s.target.last == 7)
@@ -200,6 +239,8 @@ check("changed source marks snapshot stale", s.entry.stale and not source.curren
 check("preview retains original evidence after source changes", table.concat(picker.evidence(s.entry, s.entry.graph.by_id.name), "\n")
   :find("return user.name", 1, true) ~= nil)
 count = #requests
+view.out()
+check("stale source blocks step out", #requests == count)
 view.ask("What changed?")
 check("stale questions require refresh", #requests == count)
 view.refresh()

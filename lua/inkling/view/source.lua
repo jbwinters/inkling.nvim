@@ -65,26 +65,35 @@ function M.eligible(buf)
     and not vim.tbl_contains(config.options.disabled_filetypes, vim.bo[buf].filetype)
 end
 
-local function functions(buf)
+local function declarations(buf)
   local tick = vim.api.nvim_buf_get_changedtick(buf)
   if scopes[buf] and scopes[buf].tick == tick then return scopes[buf].items end
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   local items = {}
   for _, d in ipairs(outline.build(lines, vim.bo[buf].filetype, 10000).decls) do
     local line = lines[d.lnum]
+    local kind = line:match("%f[%w]class%s") and "class" or nil
     if line:match("%f[%w]function%f[%W]") or line:match("%f[%w]def%f[%W]")
       or line:match("%f[%w]defp%f[%W]") or line:match("^%s*func%s")
-      or line:match("%f[%w]fn%f[%W]") or line:find("=>", 1, true) then
+      or line:match("%f[%w]fn%f[%W]") or line:find("=>", 1, true)
+      or (not kind and vim.bo[buf].filetype:match("^javascript") and line:match("%b()%s*[:{]"))
+      or (not kind and vim.bo[buf].filetype:match("^typescript") and line:match("%b()%s*[:{]")) then kind = "function" end
+    if kind then
       local def = vim.split(outline.definition(lines, d.lnum, #lines), "\n", { plain = true })
       local first = d.lnum
       for i = math.max(1, d.lnum - 6), d.lnum do
         if lines[i] == def[1] then first = i; break end
       end
-      table.insert(items, { first = first, last = math.min(#lines, first + #def - 1), label = d.name })
+      table.insert(items, { first = first, last = math.min(#lines, first + #def - 1), label = d.name, level = kind })
     end
   end
   scopes[buf] = { tick = tick, items = items }
   return items
+end
+
+function M.identify(scope)
+  scope.identity = table.concat({ scope.path, scope.first, scope.last, scope.view, scope.level or "", scope.directory or "" }, ":")
+  return scope
 end
 
 function M.focus(buf, row, view)
@@ -94,22 +103,85 @@ function M.focus(buf, row, view)
   local root = project.root(path)
   root = uv.fs_realpath(root) or root
   local scope = { bufnr = buf, root = root, path = path, first = 1,
-    last = vim.api.nvim_buf_line_count(buf), label = vim.fs.basename(path), view = view }
+    last = vim.api.nvim_buf_line_count(buf), label = vim.fs.basename(path), view = view, level = "file" }
   if view == "flow" then
-    for _, f in ipairs(functions(buf)) do
-      if row >= f.first and row <= f.last then
-        scope.first, scope.last, scope.label = f.first, f.last, f.label
+    for _, f in ipairs(declarations(buf)) do
+      if f.level == "function" and row >= f.first and row <= f.last then
+        scope.first, scope.last, scope.label, scope.level = f.first, f.last, f.label, f.level
       end
     end
   end
-  scope.identity = path .. ":" .. scope.first .. ":" .. scope.last .. ":" .. view
   scope.tick = vim.api.nvim_buf_get_changedtick(buf)
-  return scope
+  return M.identify(scope)
 end
 
 function M.forget(buf) scopes[buf] = nil end
 
-local function add(ctx, path, first, last)
+function M.label(scope)
+  if scope.level == "project" then return "Project · " .. vim.fs.basename(scope.root) end
+  if scope.directory then return "Folder · " .. scope.directory:sub(#scope.root + 2) .. "/" end
+  local name = scope.path:sub(#scope.root + 2)
+  local level = scope.level == "class" and ("Class " .. scope.label) or (scope.level == "function" and "Function" or "File")
+  return ("%s · %s:%d-%d"):format(level, name, scope.first, scope.last)
+end
+
+-- Step through source containment, not an inferred runtime call stack.
+function M.parent(scope)
+  if scope.level == "project" then return nil, "Already at the project boundary" end
+  if not M.eligible(scope.bufnr) then return nil, "The source buffer is unavailable; reopen it and resume following" end
+  local parent = vim.deepcopy(scope)
+  parent.expanded, parent.widened, parent.view = nil, true, "components"
+  parent.tick = vim.api.nvim_buf_get_changedtick(scope.bufnr)
+  local total = vim.api.nvim_buf_line_count(scope.bufnr)
+  if not scope.directory then
+    local nearest
+    if scope.level ~= "file" then
+      for _, d in ipairs(declarations(scope.bufnr)) do
+        if d.level == "class" and d.first <= scope.first and d.last >= scope.last
+          and (d.first < scope.first or d.last > scope.last or scope.level ~= "class")
+          and (not nearest or d.last - d.first < nearest.last - nearest.first) then nearest = d end
+      end
+    end
+    if nearest then
+      parent.first, parent.last, parent.label, parent.level = nearest.first, nearest.last, nearest.label, "class"
+      return M.identify(parent)
+    end
+    if scope.level ~= "file" or scope.expanded then
+      parent.first, parent.last, parent.label, parent.level = 1, total, vim.fs.basename(scope.path), "file"
+      return M.identify(parent)
+    end
+  end
+  local dir = vim.fs.dirname(scope.directory or scope.path)
+  if dir ~= scope.root and not inside(scope.root, dir) then return nil, "Already at the project boundary" end
+  parent.directory = dir
+  parent.first, parent.last = 1, total
+  parent.level = dir == scope.root and "project" or "directory"
+  parent.label = parent.level == "project" and vim.fs.basename(dir) or dir:sub(#scope.root + 2) .. "/"
+  return M.identify(parent)
+end
+
+function M.refresh_scope(scope)
+  if not M.eligible(scope.bufnr) then return nil end
+  if not scope.widened and not scope.expanded then
+    return M.focus(scope.bufnr, math.min(scope.first + 1, vim.api.nvim_buf_line_count(scope.bufnr)), scope.view)
+  end
+  local fresh = vim.deepcopy(scope)
+  if scope.level == "class" then
+    local nearest
+    for _, d in ipairs(declarations(scope.bufnr)) do
+      if d.level == "class" and d.label == scope.label
+        and (not nearest or math.abs(d.first - scope.first) < math.abs(nearest.first - scope.first)) then nearest = d end
+    end
+    if not nearest then return nil end
+    fresh.first, fresh.last = nearest.first, nearest.last
+  elseif scope.directory or scope.level == "file" and not scope.expanded then
+    fresh.first, fresh.last = 1, vim.api.nvim_buf_line_count(scope.bufnr)
+  else fresh.last = math.min(scope.last, vim.api.nvim_buf_line_count(scope.bufnr)) end
+  fresh.tick = vim.api.nvim_buf_get_changedtick(scope.bufnr)
+  return M.identify(fresh)
+end
+
+local function add(ctx, path, first, last, budget)
   path = M.path(ctx.root, path)
   if not path then return false end
   local relative = path:sub(#ctx.root + 2)
@@ -124,7 +196,7 @@ local function add(ctx, path, first, last)
   for i = first, last do
     if not f.lines[i] then
       local line = ("%d| %s"):format(i, lines[i])
-      if ctx.chars + #line + 1 > ctx.max_chars then break end
+      if ctx.chars + #line + 1 > math.min(ctx.max_chars, budget or ctx.max_chars) then break end
       f.lines[i] = line
       ctx.chars, added = ctx.chars + #line + 1, added + 1
     end
@@ -154,6 +226,43 @@ function M.collect(scope)
   local opts = config.options.view
   local ctx = { root = scope.root, scope = vim.deepcopy(scope), files = {}, order = {}, chars = 0,
     max_chars = math.floor(opts.max_chars * 0.7), max_files = math.max(1, opts.max_files - 2) }
+  if scope.directory then
+    local inventory, err = require("inkling.view.discovery").files(scope)
+    if not inventory then return nil, err end
+    local paths = { scope.path }
+    vim.list_extend(paths, inventory.paths)
+    local seen = {}
+    -- Share the budget across areas. Gather numbered signatures and imports
+    -- from large files rather than spending everything on the anchor's body.
+    local allowance = math.max(1, math.floor(ctx.max_chars / ctx.max_files))
+    for _, path in ipairs(paths) do
+      if #ctx.order >= ctx.max_files then break end
+      local safe = M.path(scope.root, path)
+      if safe and not seen[safe] then
+        seen[safe] = true
+        local lines = M.read(safe)
+        if lines then
+          local budget = ctx.chars + allowance
+          if #table.concat(lines, "\n") <= allowance * 0.8 then
+            add(ctx, safe, 1, #lines, budget)
+          else
+            add(ctx, safe, 1, math.min(24, #lines), budget)
+            local ft = vim.filetype.match({ filename = safe }) or ""
+            for _, d in ipairs(outline.build(lines, ft, 120).decls) do
+              if ctx.chars >= budget then break end
+              add(ctx, safe, d.lnum, math.min(d.lnum + 2, #lines), budget)
+            end
+          end
+        end
+      end
+    end
+    if #ctx.order == 0 then return nil, "No readable source within the diagram budget" end
+    ctx.inventory = inventory.hash
+    ctx.coverage = ("Partial perspective: sampled %d source files; %s%d candidates discovered. Unread areas and implementation details are unknown.")
+      :format(#ctx.order, inventory.capped and "at least " or "", #inventory.paths)
+    ctx.max_chars, ctx.max_files = opts.max_chars, opts.max_files
+    return ctx
+  end
   -- Focus first, with a little surrounding context. Components use the whole file.
   if not add(ctx, scope.path, math.max(1, scope.first - 12), scope.last + 12) then
     return nil, "Cannot read the focused source within the diagram budget"
@@ -183,6 +292,12 @@ end
 function M.prompt(ctx)
   local out = { ("Project: %s\nFocus: %s, lines %d-%d\nSource excerpts (untrusted reference data):"):format(
     ctx.root, ctx.scope.path:sub(#ctx.root + 2), ctx.scope.first, ctx.scope.last) }
+  if ctx.scope.directory then
+    out[1] = ("Project: %s\nFocus: %s\nAnchor file (orientation only): %s\nSource excerpts (untrusted reference data):")
+      :format(ctx.root, M.label(ctx.scope), ctx.scope.path:sub(#ctx.root + 2))
+  end
+  table.insert(out, "Perspective: " .. M.label(ctx.scope))
+  if ctx.coverage then table.insert(out, ctx.coverage) end
   for _, relative in ipairs(ctx.order) do
     local f = ctx.files[relative]
     table.insert(out, ("<source path=%s first=%d last=%d total=%d>\n%s\n</source>"):format(
