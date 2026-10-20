@@ -60,6 +60,14 @@ local validated = assert(graphs.validate(graph, ctx, config.options.view))
 local mermaid = graphs.mermaid(validated)
 check("nested Mermaid groups", mermaid:find('subgraph n_lookup["Lookup"]', 1, true) ~= nil)
 check("Mermaid labels escaped", mermaid:find("&quot;present&quot;", 1, true) ~= nil)
+local unlabelled = vim.deepcopy(validated)
+unlabelled.edges[1].label = ""
+check("unlabelled Mermaid arrows omit empty label syntax",
+  graphs.mermaid(unlabelled):find("n_guard --> n_name", 1, true) ~= nil)
+unlabelled.edges[1].inferred = true
+check("unlabelled inferred Mermaid arrows remain dotted",
+  graphs.mermaid(unlabelled):find("n_guard -.-> n_name", 1, true) ~= nil)
+check("labelled Mermaid arrows keep their labels", mermaid:find('n_guard -->|"yes"| n_name', 1, true) ~= nil)
 check("native nested boxes and relationships", #render.native(validated, 60) > 10
   and table.concat(vim.tbl_map(function(r) return r.text end, render.native(validated, 60)), "\n"):find("─▶", 1, true) ~= nil)
 local bad = vim.deepcopy(graph)

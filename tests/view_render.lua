@@ -44,19 +44,35 @@ callback({ code = 0 }); vim.wait(20)
 check("rendered image uploaded with actual PNG dimensions", done and not err and h.id == 42
   and h.camera.width == 800 and h.camera.height == 400 and transmitted == 1)
 h:draw(60, 15)
+check("layout creates the virtual image placement", placements == 1)
+h:present()
+vim.wait(120)
+check("presentation restores placement after the UI paints", placements == 2)
 local initial = placements
 camera.zoom(h.camera, 2)
 h:draw(60, 15)
+h:present()
+vim.wait(120)
 camera.pan(h.camera, 4, 2)
 local grid = h:draw(60, 15)
-check("pan and zoom reuse the uploaded image", transmitted == 1 and placements == initial + 1 and #grid == 15)
+h:present()
+check("pan and zoom reuse the uploaded image", transmitted == 1 and placements == initial + 2 and #grid == 15)
 local previous_camera = vim.deepcopy(h.camera)
 resume()
+vim.wait(120)
 check("returning to tmux restores cached pixels and placement", transmitted == 2 and restored_id == 42
-  and placements == initial + 2 and vim.deep_equal(h.camera, previous_camera))
+  and placements == initial + 4 and vim.deep_equal(h.camera, previous_camera))
+camera.zoom(h.camera, 0.5)
+h:draw(60, 15)
+h:present()
+local before_close = placements
 h:clear()
+h:present()
+vim.wait(120)
+check("queued presentation cannot paint a closed canvas", placements == before_close)
 check("image cleanup deletes only owned image and temporary files", deleted == 1
-  and unwatched == 1 and h.png == nil and vim.fn.filereadable(args[3]) == 0 and vim.fn.filereadable(args[5]) == 0)
+  and placements == before_close and unwatched == 1 and h.png == nil
+  and vim.fn.filereadable(args[3]) == 0 and vim.fn.filereadable(args[5]) == 0)
 resume()
 check("late visibility callbacks cannot restore a closed canvas", transmitted == 2)
 done = false

@@ -131,7 +131,10 @@ function M.image(graph, highlights, win, buf, height, top, cb)
     if self.external then self.external:restore(); return end
     kitty.upload(self.png, self.id)
     self.placement = nil
-    if self.camera then self:draw(self.camera.columns, self.camera.rows) end
+    if self.camera then
+      self:draw(self.camera.columns, self.camera.rows)
+      self:present()
+    end
   end
   function handle:draw(columns, rows)
     if not self.camera or self.cancelled then return nil end
@@ -140,12 +143,30 @@ function M.image(graph, highlights, win, buf, height, top, cb)
     local size = c.image_columns .. ":" .. c.image_rows
     if self.placement ~= size then
       kitty.place(self.id, c.image_columns, c.image_rows)
-      self.placement = size
+      self.placement, self.needs_present = size, true
     end
     return kitty.grid(c)
   end
   function handle:present()
-    if self.external then self.external:present() end
+    if self.cancelled then return end
+    if self.external then self.external:present(); return end
+    local c = self.camera
+    if not c or not self.id then return end
+    if not self.needs_present or self.placing then return end
+    -- Let the separate TUI finish its pending redraw before placement, then
+    -- repaint even unchanged placeholders so the image appears while idle.
+    self.placing, self.needs_present = true, false
+    vim.cmd("redraw")
+    vim.defer_fn(function()
+      self.placing = false
+      if self.cancelled or not vim.api.nvim_win_is_valid(win) then return end
+      if vim.api.nvim_win_get_buf(win) ~= buf then return end
+      local latest = self.camera
+      kitty.place(self.id, latest.image_columns, latest.image_rows)
+      self.placement = latest.image_columns .. ":" .. latest.image_rows
+      self.needs_present = false
+      vim.api.nvim__redraw({ win = win, valid = false, flush = true })
+    end, 100)
   end
   local browser = config.options.view.mermaid.browser
   if not browser then

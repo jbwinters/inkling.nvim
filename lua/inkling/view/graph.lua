@@ -299,7 +299,10 @@ function M.mermaid(graph, highlights)
   end
   emit("", "  ")
   for i, e in ipairs(graph.edges) do
-    table.insert(lines, ('  n_%s %s|"%s"| n_%s'):format(e.from, e.inferred and "-.->" or "-->", escape(M.label(e, graph)), e.to))
+    local label = escape(M.label(e, graph))
+    local arrow = e.inferred and "-.->" or "-->"
+    if label ~= "" then arrow = arrow .. '|"' .. label .. '"|' end
+    table.insert(lines, ("  n_%s %s n_%s"):format(e.from, arrow, e.to))
     local colors = { added = "#98c379", removed = "#e06c75", modified = "#e5c07b", unknown = "#abb2bf" }
     if graph.comparison == "changes" and colors[e.change] then
       table.insert(lines, ("  linkStyle %d stroke:%s,stroke-width:2px"):format(i - 1, colors[e.change]))

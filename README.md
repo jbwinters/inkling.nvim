@@ -1,14 +1,32 @@
 # inkling.nvim
 
-**AI code completion for Neovim, like GitHub Copilot, with your choice of model:
-Claude (Anthropic), OpenAI, or a local LLM through Ollama.**
+**Read code through diagrams, ask questions, and get AI completions—all inside
+Neovim, with your choice of model.**
 
-As you type, inkling shows an inline suggestion (grey "ghost text") for the rest
-of the line or block. Press Tab to accept it. It also predicts your next edit:
-rename a variable, and it offers to update the next place that uses it.
+Inkling draws component and flow diagrams beside your code. Follow a function,
+step out to see the bigger picture, step into a dependency, or review a local
+branch. Ask questions about the diagram and jump to the source behind an answer.
+
+![Neovim recording: a flow diagram follows the code cursor, then zooms, pans, and fits beside the source](doc/demos/follow-focus.gif)
+
+*Recorded in Neovim with fixed demo responses; generation times are not a
+benchmark. [Recording setup and example code](doc/demos/README.md).*
+
+While you write, Inkling also offers inline suggestions (grey "ghost text") and
+predicts related edits. Press Tab to accept. Use diagrams, completions, or both.
+
+[Get started](#install) · [Diagram walkthrough](#read-code-through-diagrams) ·
+[Branch review](#review-a-local-branch) · [Image setup](#set-up-rendered-diagrams) ·
+[Configuration](#configuration)
 
 ## Features
 
+- **Diagram workspace**: component and flow diagrams that follow your focus,
+  with pan/zoom, source previews, and Mermaid export
+- **Explore and ask**: step out to a wider scope, step into a component with a
+  prompt, and ask questions with source citations and highlighted paths
+- **Local branch review**: compare Changes / Before / After against a Git merge
+  base, with evidence from the exact revisions
 - **Inline completions** (ghost text) that stream in as the model writes, for the
   current line or a whole block
 - **Bring your own model**: Claude Sonnet, OpenAI GPT, any OpenAI-compatible API
@@ -20,8 +38,6 @@ rename a variable, and it offers to update the next place that uses it.
   apply it with Tab again
 - **Spend and acceptance tracking**: cost per day and per model, and how many
   suggestions you actually used
-- **Diagram workspace**: component and flow diagrams that follow your focus in
-  Neovim, with questions, source evidence, and Mermaid export
 - **Small interface**: one key to accept, one command (`:Inkling`), no
   subscription; you pay your provider per token
 
@@ -69,6 +85,29 @@ providers = {
 ```
 
 ## Usage
+
+| What you want to do | Start here |
+| --- | --- |
+| Understand a function's decisions and exits | Put your cursor inside it; run `:Inkling view flow` |
+| See responsibilities and dependencies | Run `:Inkling view components` |
+| Review committed changes on your branch | Run `:Inkling review main` (or your baseline branch) |
+| Ask about an open diagram | Run `:Inkling ask What happens if the request fails?` |
+| Get inline completions | Start typing; press `Tab` to accept |
+
+Diagrams are opt-in. For a diagram-only setup, disable completion features:
+
+```lua
+require('inkling').setup({
+  enabled = false,
+  next_edit = false,
+})
+```
+
+Set up a provider below under [Choosing a model](#choosing-a-model).
+For graphical diagrams, also follow [Image setup](#set-up-rendered-diagrams);
+native text diagrams work without image support.
+
+### Inline completions
 
 Start typing in insert mode. Suggestions appear after a short pause.
 
@@ -146,6 +185,10 @@ dependencies. Flow view follows the enclosing function when it can identify one.
 The scope and whether it is following or pinned appear at the top of the diagram.
 Press `v` to choose a view with a description of what each one shows.
 
+### Explore a wider or deeper view
+
+![Neovim recording: step out to a class, find HttpTransport with a source preview, step in with a prompt, and ask about retries](doc/demos/navigate-and-ask.gif)
+
 Press **`u` to step out** to a wider perspective: enclosing class when recognized,
 then file, containing folders, and project. Each step opens a component overview
 and stays pinned. **`b` returns** to the previous diagram and conversation; it
@@ -159,6 +202,23 @@ budget. The header names the scope and shows **partial evidence**; `?` exposes
 coverage details. These boundaries come from code containment. Recursive detail
 presets are planned; `+` / `-` still only change the image's magnification.
 
+These controls answer different needs:
+
+| You want to… | Use |
+| --- | --- |
+| Read small labels or move around a large diagram | `+` / `-`, pan with `hjkl`, then `0` to fit; no AI request |
+| Understand where this function fits | `u` to widen the scope |
+| Trace a particular dependency or behavior | `/` to select an element, then `e`; try “trace retries and final failure” |
+| Simplify what the current diagram shows | `g`; try “show the main responsibilities and omit helper details” |
+| Check a condition without requesting a new view | `a`; try “can retries continue forever?” |
+| Return to your previous investigation | `b`, including its conversation |
+
+`g` requests a new diagram within the current scope. `a` adds an answer and can
+highlight relevant nodes or paths. `e` can bring more implementation evidence
+into scope. There is no automatic recursive-depth slider yet.
+
+### Find elements and move around
+
 If [Telescope](https://github.com/nvim-telescope/telescope.nvim) is installed,
 Inkling uses it for fuzzy element search, source previews, and the action menu.
 Type to filter, use `Ctrl-n` / `Ctrl-p` to move, and `Esc` to cancel. In the element
@@ -166,8 +226,8 @@ picker, `Ctrl-O` opens evidence in your code pane and `Ctrl-A` asks about that
 element. Previews show the source snapshot used to generate the diagram.
 Without Telescope, selection uses Neovim's `vim.ui.select`.
 
-With Mermaid CLI and Kitty configured, diagrams render as a graphical canvas in
-Neovim. **Components** use nested responsibility boundaries and dependency arrows;
+With Mermaid CLI and a supported image backend, diagrams render as a graphical
+canvas in Neovim. **Components** use nested responsibility boundaries and dependency arrows;
 **flow** uses execution steps, decision diamonds, branches, and exits. Changing
 views generates a new diagram; the old one remains labeled correctly while it loads.
 
@@ -202,6 +262,27 @@ without graphics support. In that view, `j` / `k` navigate boxes and source evid
 | mouse drag / wheel | pan / zoom at the pointer |
 | `z` / `q` | maximize or restore the diagram / close the workspace |
 
+These keys apply in the diagram pane. To act from the source pane instead:
+
+```vim
+:Inkling view out
+:Inkling view in Trace the timeout and retry handling
+:Inkling view back
+:Inkling view refine Show only failure paths
+:Inkling view follow
+```
+
+Step-in opens an element picker if nothing is selected. You can also add your
+own shortcuts; these are examples, not default global mappings:
+
+```lua
+vim.keymap.set('n', '<leader>if', '<cmd>Inkling view flow<cr>', { desc = 'Inkling flow' })
+vim.keymap.set('n', '<leader>ic', '<cmd>Inkling view components<cr>', { desc = 'Inkling components' })
+vim.keymap.set('n', '<leader>ia', '<cmd>Inkling ask<cr>', { desc = 'Ask Inkling' })
+```
+
+### Chat, following, and refresh
+
 Ask with `a` or `:Inkling ask Can a cancelled request still update this buffer?`.
 The question editor is a small split: `Enter` adds a line, `Ctrl-S` sends, and
 `Esc` then `q` closes it while keeping the draft for that view. The action menu
@@ -217,7 +298,16 @@ the new revision. Previous views and conversations remain available with `b`.
 References are checked against supplied source ranges; semantic correctness still
 needs review. Missing evidence and coverage limitations appear below the diagram.
 
+Inkling keeps up to 16 generated diagrams in an in-memory cache and 20 views in
+history. Returning to unchanged evidence can reuse a diagram. Pan, zoom, fit,
+element selection, and source navigation do not call the model. New scopes,
+view types, refinements, and questions can make requests; `r` deliberately
+regenerates the current view. Caches do not persist after restarting Neovim.
+Use `:Inkling spend` to see diagram and question usage.
+
 ### Review a local branch
+
+![Neovim recording: review a local branch, preview a changed file, and switch between Before and After diagrams](doc/demos/branch-review.gif)
 
 ```vim
 :Inkling review main
@@ -243,6 +333,12 @@ new commits. Views are cached in memory by their evidence and comparison.
 Large reviews sample evidence within the configured budget; `?` shows coverage
 and `f` includes files not sampled. Diagrams still need human review, and layouts
 can change between Before and After. No GitHub/GitLab connection is needed.
+
+The base and head must be available locally. Inkling does not fetch branches.
+Commit the changes you want included before starting a review; staged,
+unstaged, and unsaved edits are excluded.
+
+### Set up rendered diagrams
 
 Rendered Mermaid uses the [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)
 and an image backend. The default `view.image_backend = 'auto'` chooses:
@@ -300,6 +396,21 @@ use text unless a working image.nvim backend is configured.
 terminal detection is unavailable; it requires Unicode placeholder support.
 `view.renderer = 'native'` always uses text. Press `i` to switch text/canvas;
 `m` reports missing image prerequisites.
+
+### If something looks wrong
+
+| Symptom | Try |
+| --- | --- |
+| Text boxes instead of an image | Press `m` to check image prerequisites; configure Mermaid CLI and an image backend above |
+| Canvas disappears after switching tmux panes | Press `m` to restore the cached image; check `allow-passthrough` for the direct backend |
+| Labels are too small | `+` to zoom, `hjkl` to pan, or `z` to maximize; `0` fits again |
+| Diagram stopped following the cursor | Inspecting it pins the subject; run `:Inkling view follow` |
+| Diagram says the source changed | `r` refreshes from current source; previous answers describe the old snapshot |
+| Branch review misses a new commit | Run `:Inkling review main` again; `r` keeps the original pinned commits |
+| “Rendering Mermaid…” stays visible | This is the local renderer, after diagram generation. Check the browser/CLI setup; `i` switches to text |
+| A question is waiting in the editor | `Ctrl-S` sends; `Enter` inserts a newline |
+
+### Diagram configuration
 
 Diagram mode is opt-in and works with `enabled = false` (completions off). It
 uses the active provider and logs requests through the existing spend tracker.
